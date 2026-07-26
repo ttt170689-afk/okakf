@@ -48,9 +48,6 @@
       this.prompt = el('div', 'prompt');
       this.hud.appendChild(this.prompt);
 
-      this.speech = el('div', 'speech');
-      this.hud.appendChild(this.speech);
-
       this.notifications = el('div', 'notifications');
       this.hud.appendChild(this.notifications);
 
@@ -188,11 +185,8 @@
       this.prompt.innerHTML = text ? `<div class="prompt-inner">${text}</div>` : '';
     }
 
-    showSpeech(text) {
-      this.speech.innerHTML = `<div class="speech-inner">${text}</div>`;
-      clearTimeout(this._speechT);
-      this._speechT = setTimeout(() => { this.speech.innerHTML = ''; }, 4200);
-    }
+    /** Диалоги отключены — реплики не отображаются */
+    showSpeech(text) { /* no-op */ }
 
     notify(text, kind = 'info') {
       const n = el('div', 'note note-' + kind, text);
@@ -352,103 +346,53 @@
         }
 
         /* ---------- ДИАЛОГ ---------- */
+        /* ---------- NPC: ПРЯМЫЕ ДЕЙСТВИЯ (без диалогов) ---------- */
         case 'dialogue': {
           const npc = data.npc;
-          // Контекстная реплика: зависит от времени, стадии, погоды, настроения
-          const line = data.line || g.dialogue.pick(npc.id);
-          html = head(`💬 ${npc.name}`, npc.species);
-          html += `<div class="p-body"><div class="dlg">
-            <div class="portrait" style="background:#${(npc.color || 0x888888).toString(16).padStart(6, '0')}"></div>
-            <div class="text">«${line}»</div></div>`;
+          html = head(`${npc.name}`, npc.species);
+          html += '<div class="p-body">';
 
-          // --- Сюжетная глава (только Артём) ---
-          if (npc.id === 'artyom' && !data.line) {
-            const ch = g.dialogue.availableChapter();
-            if (ch) {
-              html += `<div class="story-avail" data-act="story" data-id="${ch.id}">
-                <div class="ic">📖</div><div class="body"><b>${ch.title}</b>
-                <div class="sm">Артём хочет о чём-то рассказать...</div></div>
-                <div class="go">Выслушать ▶</div></div>`;
-            }
-          }
-          // Квесты
+          // Квесты этого NPC
           const offers = g.quests.offer(npc.id);
           const activeQ = g.quests.active.filter((a) => g.quests.def(a.id).npc === npc.id);
-          html += '<div class="list">';
-          for (const q of offers) {
-            html += `<div class="recipe" data-act="accept_quest" data-id="${q.id}">
-              <div class="ic">📜</div><div class="body"><b>${q.name}</b> <span class="tag">${q.type}</span>
-              <div class="sm">${q.desc}</div></div><div class="go">Взять ▶</div></div>`;
+          if (offers.length || activeQ.length) {
+            html += '<h3>📜 Задания</h3><div class="list">';
+            for (const q of offers) {
+              html += `<div class="recipe" data-act="accept_quest" data-id="${q.id}">
+                <div class="ic">📜</div><div class="body"><b>${q.name}</b> <span class="tag">${q.type}</span>
+                <div class="sm">${q.desc}</div></div><div class="go">Взять ▶</div></div>`;
+            }
+            for (const a of activeQ) {
+              const q = g.quests.def(a.id);
+              const goal = q.goal;
+              let prog = '';
+              if (goal.item) prog = `${g.inv.count(goal.item)}/${goal.count || 1}`;
+              else if (goal.feed || goal.read) prog = `${a.progress}/${goal.count || goal.read}`;
+              const can = goal.item && g.inv.count(goal.item) >= (goal.count || 1);
+              html += `<div class="recipe ${can ? '' : 'dis'}" ${can ? `data-act="turnin" data-id="${a.id}"` : ''}>
+                <div class="ic">⏳</div><div class="body"><b>${q.name}</b> <span class="tag">${prog}</span>
+                <div class="sm">${q.desc}</div></div><div class="go">${can ? 'Сдать ▶' : 'в работе'}</div></div>`;
+            }
+            html += '</div>';
           }
-          for (const a of activeQ) {
-            const q = g.quests.def(a.id);
-            const goal = q.goal;
-            let prog = '';
-            if (goal.item) prog = `${g.inv.count(goal.item)}/${goal.count || 1}`;
-            else if (goal.feed || goal.read) prog = `${a.progress}/${goal.count || goal.read}`;
-            const can = goal.item && g.inv.count(goal.item) >= (goal.count || 1);
-            html += `<div class="recipe ${can ? '' : 'dis'}" ${can ? `data-act="turnin" data-id="${a.id}"` : ''}>
-              <div class="ic">⏳</div><div class="body"><b>${q.name}</b> <span class="tag">${prog}</span>
-              <div class="sm">${q.desc}</div></div><div class="go">${can ? 'Сдать ▶' : 'в работе'}</div></div>`;
-          }
-          html += '</div>';
-          // Специальные действия NPC
+
+          // Услуги NPC
           const acts = [];
-          if (npc.id === 'artyom') {
-            acts.push(['brew', '⚗️ Варить эликсир'], ['dlg_more', '🗨️ Расспросить о друге'],
-              ['dlg_flirt', '💗 Поболтать по душам'], ['storylog', '📖 Журнал истории']);
-          }
+          if (npc.id === 'artyom') acts.push(['brew', '⚗️ Варить эликсир']);
           if (npc.id === 'mei') acts.push(['spa', '💆 Массаж для друга (30🪙)']);
           if (npc.id === 'barry') acts.push(['gift_flour', '🌾 Взять муку в подарок']);
           if (npc.id === 'athena') acts.push(['read', '📚 Почитать книгу']);
           if (npc.id === 'musician') acts.push(['tip', '🪙 Бросить монетку']);
-          if (npc.id === 'horatio') acts.push(['dlg_more', '🗨️ Спросить о секретах гор']);
           if (npc.id === 'ignatiy') acts.push(['pump', '⚙️ К насосу']);
           if (acts.length) {
-            html += '<div class="btnrow">';
+            html += '<h3>Услуги</h3><div class="btnrow vert">';
             for (const [a, label] of acts) html += `<button data-act="${a}">${label}</button>`;
             html += '</div>';
           }
-          html += '</div>';
-          break;
-        }
-
-        /* ---------- СЮЖЕТНАЯ ГЛАВА ---------- */
-        case 'story': {
-          const ch = data.chapter;
-          html = head('📖 ' + ch.title, 'История семьи Звёздочётовых');
-          html += '<div class="p-body"><div class="story-lines">';
-          for (const l of ch.lines) {
-            const narration = l.startsWith('*');
-            html += `<p class="${narration ? 'narr' : 'said'}">${narration ? l.replace(/\*/g, '') : '«' + l + '»'}</p>`;
+          if (!offers.length && !activeQ.length && !acts.length) {
+            html += '<div class="empty">Сейчас здесь ничего нет. Загляни позже.</div>';
           }
           html += '</div>';
-          if (data.reply) {
-            html += `<div class="story-reply"><b>Артём:</b> «${data.reply}»</div>
-              <div class="btnrow"><button data-act="close">Попрощаться</button></div>`;
-          } else {
-            html += '<h3>Что ответишь?</h3><div class="btnrow vert">';
-            ch.choices.forEach((c, i) => {
-              html += `<button data-act="story_choice" data-id="${ch.id}" data-i="${i}">${c.text}</button>`;
-            });
-            html += '</div>';
-          }
-          html += '</div>';
-          break;
-        }
-
-        /* ---------- ИСТОРИЯ (журнал глав) ---------- */
-        case 'storylog': {
-          const total = FF.ARTYOM_STORY.length;
-          html = head('📖 История Артёма', `Глав пройдено: ${g.dialogue.storyDone.size} / ${total} · Отношения: ${Math.floor(g.artyomRelation || 0)}/100`);
-          html += '<div class="p-body"><div class="list">';
-          for (const ch of FF.ARTYOM_STORY) {
-            const done = g.dialogue.storyDone.has(ch.id);
-            html += `<div class="recipe ${done ? '' : 'dis'}"><div class="ic">${done ? '📖' : '🔒'}</div>
-              <div class="body"><b>${ch.title}</b>
-              <div class="sm">${done ? ch.lines[0] : 'Ещё не рассказана'}</div></div></div>`;
-          }
-          html += '</div></div>';
           break;
         }
 

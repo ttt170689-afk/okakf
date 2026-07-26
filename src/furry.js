@@ -682,17 +682,27 @@
 
     setEmotion(e, seconds = 2) { this.emotion = e; this.emotionTimer = seconds; }
 
+    /**
+     * Диалоги отключены: текстовые реплики не показываются.
+     * Метод сохранён — он проигрывает голос и держит анимацию рта,
+     * поэтому друг остаётся «живым», просто молча.
+     */
     say(text, seconds = 3.2) {
-      this.lastSpeech = text;
-      this.speechTimer = seconds;
-      FF.Game && FF.Game.showSpeech(this.opts.name + ': ' + text);
-      this.audio && this.audio.voice(this.emotion === 'sad' ? 'sad' : 'mur', this.opts.species, 1 + Math.random() * 0.15);
+      this.speechTimer = 0;
+      this.audio && this.audio.voice(
+        this.emotion === 'sad' ? 'sad' : 'mur', this.opts.species, 1 + Math.random() * 0.15);
     }
 
     /* -------------------- Обновление -------------------- */
 
     update(dt, gameHours) {
       const cfg = FF.CONFIG;
+      // LOD: чем дальше игрок, тем реже пересчитываем тяжёлое
+      if (FF.Game && FF.Game.player) {
+        const d = this.root.position.distanceTo(FF.Game.player.pos);
+        this._normalLOD = d < 12 ? 3 : d < 30 ? 6 : 12;
+        this._far = d > 45;
+      }
       // Голод растёт
       const hungerRate = 1 / (cfg.feeding.hungerPeriodMin * 60);
       this.hunger = U.clamp(this.hunger + dt * hungerRate * 60 * 0.016, 0, 1);
@@ -742,6 +752,12 @@
       // Плавное применение габаритного масштаба
       this.bodyScale = U.damp(this.bodyScale, this.bodyScaleTarget, 0.7, dt);
       this.root.scale.setScalar(this.bodyScale);
+
+      // Далеко от игрока — тонкая физика не нужна, экономим кадры
+      if (this._far) {
+        this._farTick = (this._farTick || 0) + 1;
+        if (this._farTick % 3 !== 0) { this._updateClothes(); return; }
+      }
 
       // --- ГИПЕР-ФИЗИКА: коллайдеры зон, самоколлизия, контакт с миром ---
       if (this.physics) {
@@ -816,9 +832,41 @@
       }
       this.mesh.geometry.attributes.position.needsUpdate = true;
       this.stretchAttr.needsUpdate = true;
-      // Нормали считаем не каждый кадр (оптимизация)
+      // Нормали: свой быстрый пересчёт, реже при удалении от игрока (LOD)
       this._normalTick = (this._normalTick || 0) + 1;
-      if (this._normalTick % 3 === 0) this.mesh.geometry.computeVertexNormals();
+      const every = this._normalLOD || 3;
+      if (this._normalTick % every === 0) this._fastNormals();
+    }
+
+    /**
+     * ОПТИМИЗАЦИЯ: быстрый пересчёт нормалей.
+     * Переиспользует существующие типизированные массивы (ноль аллокаций),
+     * в отличие от THREE.computeVertexNormals, который каждый раз всё пересоздаёт.
+     */
+    _fastNormals() {
+      const geo = this.mesh.geometry;
+      const pos = geo.attributes.position.array;
+      const nrm = geo.attributes.normal.array;
+      const idx = geo.index.array;
+      nrm.fill(0);
+      for (let i = 0, n = idx.length; i < n; i += 3) {
+        const a = idx[i] * 3, b = idx[i + 1] * 3, c = idx[i + 2] * 3;
+        const ax = pos[a], ay = pos[a + 1], az = pos[a + 2];
+        const e1x = pos[b] - ax, e1y = pos[b + 1] - ay, e1z = pos[b + 2] - az;
+        const e2x = pos[c] - ax, e2y = pos[c + 1] - ay, e2z = pos[c + 2] - az;
+        const cx = e1y * e2z - e1z * e2y;
+        const cy = e1z * e2x - e1x * e2z;
+        const cz = e1x * e2y - e1y * e2x;
+        nrm[a] += cx; nrm[a + 1] += cy; nrm[a + 2] += cz;
+        nrm[b] += cx; nrm[b + 1] += cy; nrm[b + 2] += cz;
+        nrm[c] += cx; nrm[c + 1] += cy; nrm[c + 2] += cz;
+      }
+      for (let i = 0, n = nrm.length; i < n; i += 3) {
+        const x = nrm[i], y = nrm[i + 1], z = nrm[i + 2];
+        const len = Math.sqrt(x * x + y * y + z * z) || 1;
+        nrm[i] = x / len; nrm[i + 1] = y / len; nrm[i + 2] = z / len;
+      }
+      geo.attributes.normal.needsUpdate = true;
     }
 
     /** Глаза, веки, рот, хвост */

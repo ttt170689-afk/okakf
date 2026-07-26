@@ -25,7 +25,8 @@
       near: 0.05,
       far: 900,
       pixelRatioCap: 2,
-      shadowMapSize: 2048,
+      shadowMapSize: 1536,
+      maxActiveLights: 10,     // одновременно активных источников света
       exposure: 1.06,
     },
 
@@ -599,7 +600,6 @@
     { id: 'alchemist', name: 'Алхимик', desc: 'Сварить 50 эликсиров' },
     { id: 'alchemist1', name: 'Первое зелье', desc: 'Сварить первый эликсир' },
     { id: 'traveler', name: 'Путешественник', desc: 'Посетить все локации' },
-    { id: 'artyom_friend', name: 'Друг Артёма', desc: 'Максимум отношений с Артёмом' },
     { id: 'true_friend', name: 'Настоящий друг', desc: 'Максимум отношений с фурри' },
     { id: 'secrets', name: 'Секретоискатель', desc: 'Найти все секреты' },
     { id: 'gourmet', name: 'Гурман', desc: 'Скормить все виды еды' },
@@ -621,7 +621,6 @@
     { id: 'gold_elixir', name: 'Свобода движения', desc: 'Использовать золотой эликсир' },
     { id: 'dragon', name: 'Драконоборец', desc: 'Победить дракона в диалоге' },
     { id: 'photographer', name: 'Фотограф', desc: 'Сделать 20 фото' },
-    { id: 'story_complete', name: 'Двести сорок первый блокнот', desc: 'Пройти всю историю Артёма' },
     { id: 'eternal_bond', name: 'Вечная связь', desc: 'Использовать Эликсир Вечной Любви' },
     { id: 'first_rip', name: 'Треск ткани', desc: 'Друг впервые порвал одежду' },
     { id: 'wardrobe_destroyer', name: 'Гроза гардеробов', desc: 'Порвать 10 вещей' },

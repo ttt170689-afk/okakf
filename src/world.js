@@ -102,8 +102,8 @@
       const S = FF.CONFIG.render.shadowMapSize;
       this.sun.shadow.mapSize.set(S, S);
       this.sun.shadow.camera.near = 1;
-      this.sun.shadow.camera.far = 260;
-      const d = 70;
+      this.sun.shadow.camera.far = 180;
+      const d = 52;
       Object.assign(this.sun.shadow.camera, { left: -d, right: d, top: d, bottom: -d });
       this.sun.shadow.bias = -0.0009;
       this.sun.shadow.normalBias = 0.035;
@@ -917,7 +917,7 @@
         mat('leaf2', { color: 0x6b4423, roughness: 0.95 }),  // какао-дерево
         mat('leaf3', { color: 0x3a6a4a, roughness: 1 }),
       ];
-      const N = 150;
+      const N = 95;
       const trunkInst = new THREE.InstancedMesh(trunkGeo, trunkMat, N);
       const leafInst = leafMats.map((m) => new THREE.InstancedMesh(leafGeo, m, Math.ceil(N / 3)));
       const dummy = new THREE.Object3D();
@@ -1314,7 +1314,7 @@
     /* ==================== ЧАСТИЦЫ ==================== */
     _buildParticles() {
       // Пыль в лучах света
-      const N = 420;
+      const N = 200;
       const geo = new THREE.BufferGeometry();
       const pos = new Float32Array(N * 3);
       for (let i = 0; i < N; i++) {
@@ -1494,6 +1494,7 @@
 
       // Фонари включаются ночью
       for (const l of this.lights) {
+        if (l._active === false) continue;   // выключённые не обновляем
         if (l.street) {
           const on = isNight ? 1 : 0.06;
           l.light.intensity = U.damp(l.light.intensity, 1.9 * on, 2, dt);
@@ -1617,12 +1618,13 @@
       }
 
       this._updateWeather(dt);
+      this._cullLights(playerPos, dt);
     }
 
     setWeather(w) {
       this.weather = w;
       if (w === 'rain' && !this.rainGroup) {
-        const N = 1800;
+        const N = 800;
         const geo = new THREE.BufferGeometry();
         const pos = new Float32Array(N * 3);
         for (let i = 0; i < N; i++) {
@@ -1650,6 +1652,45 @@
         if (pos[i] < 0) pos[i] = 40;
       }
       this.rainGroup.geometry.attributes.position.needsUpdate = true;
+    }
+
+    /**
+     * ОПТИМИЗАЦИЯ: динамический отбор источников света.
+     * Three.js обрабатывает КАЖДЫЙ источник в шейдере для каждого фрагмента,
+     * поэтому 75 ламп — это неподъёмно. Держим включёнными только
+     * несколько ближайших к игроку, остальные гасим (intensity = 0).
+     */
+    _cullLights(playerPos, dt) {
+      if (!playerPos) return;
+      this._cullTimer = (this._cullTimer || 0) - dt;
+      if (this._cullTimer > 0) return;
+      this._cullTimer = 0.35;   // пересчёт 3 раза в секунду — незаметно
+
+      const budget = FF.CONFIG.render.maxActiveLights;
+      // Собираем ВСЕ точечные источники сцены один раз (включая те,
+      // что добавлены напрямую в группы зданий, костров, витрин и т.п.)
+      let list = this._lightCache;
+      if (!list) {
+        const known = new Set(this.lights.map((l) => l.light));
+        list = this.lights.slice();
+        this.scene.traverse((o) => {
+          if (o.isPointLight && !known.has(o)) list.push({ light: o, extra: true });
+        });
+        this._lightCache = list;
+      }
+      for (const l of list) {
+        l._d2 = l.light.position.distanceToSquared(playerPos);
+      }
+      list.sort((a, b) => a._d2 - b._d2);
+
+      for (let i = 0; i < list.length; i++) {
+        const l = list[i];
+        const want = i < budget;
+        if (l._active === want) continue;
+        l._active = want;
+        // Гасим полностью: visible=false убирает лампу из расчёта шейдера
+        l.light.visible = want;
+      }
     }
 
     /** Определение локации по позиции */

@@ -48,7 +48,6 @@
       this.inv = new FF.Inventory();
       this.quests = new FF.QuestSystem(this);
       this.taxi = new FF.TaxiSystem(this);
-      this.dialogue = new FF.DialogueEngine(this);
       // Физика брошенных предметов (еда падает, отскакивает, застревает в складках)
       this.objects = new FF.ObjectPhysics(this.scene, this.world, this.furry.physics);
       this.boarding = new FF.BoardingSystem(this);
@@ -828,34 +827,6 @@
           if (!ok) this.taxi.active = false;
           break;
         }
-        case 'story': {
-          const ch = FF.ARTYOM_STORY.find((c) => c.id === ds.id);
-          if (ch) this.ui.open('story', { chapter: ch });
-          break;
-        }
-        case 'story_choice': {
-          const ch = FF.ARTYOM_STORY.find((c) => c.id === ds.id);
-          const reply = this.dialogue.finishChapter(ds.id, parseInt(ds.i, 10));
-          if (this.dialogue.storyDone.size >= FF.ARTYOM_STORY.length) this.achieve('story_complete');
-          this.ui.open('story', { chapter: ch, reply: reply || '...' });
-          break;
-        }
-        case 'storylog': this.ui.open('storylog'); break;
-        case 'dlg_more': {
-          const npc = data.npc;
-          this.ui.render('dialogue', { npc, line: this.dialogue.pick(npc.id) });
-          break;
-        }
-        case 'dlg_flirt': {
-          const npc = data.npc;
-          const d = FF.DIALOGUE[npc.id];
-          this.artyomRelation = (this.artyomRelation || 0) + 6;
-          if (this.artyomRelation >= 100) this.achieve('artyom_friend');
-          const line = this.artyomRelation > 30 && d && d.flirt ? U.pick(d.flirt) : this.dialogue.pick(npc.id);
-          this.ui.render('dialogue', { npc, line });
-          this.quests.event('relation', { n: this.artyomRelation });
-          break;
-        }
         case 'spa': this.ui.close(); this._spa(); break;
         case 'gift_flour': {
           if (this.usedOnce.has('flour_gift_' + this.day)) { this.notify('🌾 Барри уже дарил муку сегодня.', 'warn'); return; }
@@ -1050,7 +1021,7 @@
         v: 1, gameHours: this.gameHours, day: this.day, weather: this.weather,
         furry: this.furry.serialize(), player: this.player.serialize(), inv: this.inv.serialize(),
         quests: this.quests.serialize(), ach: [...this.achievements], visited: [...this.visited],
-        dialogue: this.dialogue.serialize(), eternalBond: this.furry.eternalBond,
+        eternalBond: this.furry.eternalBond,
         clothing: this.clothing.serialize(), weatherSys: this.weatherSys.serialize(),
         statsTracker: this.statsTracker.serialize(), notebook: this.notebook.serialize(),
         photos: this.photos,
@@ -1078,7 +1049,6 @@
         this.player.deserialize(d.player);
         this.inv.deserialize(d.inv);
         this.quests.deserialize(d.quests);
-        this.dialogue.deserialize(d.dialogue);
         this.furry.eternalBond = !!d.eternalBond;
         this.achievements = new Set(d.ach || []);
         this.visited = new Set(d.visited || []);
@@ -1219,6 +1189,40 @@
       else this.renderer.render(this.scene, this.camera);
     }
 
+    /**
+     * ОПТИМИЗАЦИЯ: автоподстройка качества под реальный FPS.
+     * Если кадры проседают — снижаем разрешение рендера и отключаем
+     * тяжёлые эффекты; когда становится легче, возвращаем обратно.
+     */
+    _autoQuality(dt) {
+      this._fpsAcc = (this._fpsAcc || 0) + dt;
+      this._fpsFrames = (this._fpsFrames || 0) + 1;
+      if (this._fpsAcc < 2) return;
+      const fps = this._fpsFrames / this._fpsAcc;
+      this._fpsAcc = 0; this._fpsFrames = 0;
+      if (this.qualityLocked) return;
+
+      const cur = this._qualityLevel != null ? this._qualityLevel : 2;   // 0 low .. 2 high
+      let next = cur;
+      if (fps < 32 && cur > 0) next = cur - 1;
+      else if (fps > 55 && cur < 2) next = cur + 1;
+      if (next === cur) return;
+      this._qualityLevel = next;
+
+      const cap = FF.CONFIG.render.pixelRatioCap;
+      const presets = [
+        { ratio: Math.min(1.0, cap), post: false, shadows: false, lights: 5 },
+        { ratio: Math.min(1.25, cap), post: true, shadows: true, lights: 8 },
+        { ratio: Math.min(window.devicePixelRatio, cap), post: true, shadows: true, lights: 10 },
+      ];
+      const q = presets[next];
+      this.renderer.setPixelRatio(q.ratio);
+      FF.CONFIG.post.enabled = q.post;
+      this.renderer.shadowMap.enabled = q.shadows;
+      FF.CONFIG.render.maxActiveLights = q.lights;
+      this.notify(`⚙️ Качество: ${['низкое', 'среднее', 'высокое'][next]} (${Math.round(fps)} FPS)`, 'info');
+    }
+
     start() {
       let last = performance.now();
       const loop = (now) => {
@@ -1227,6 +1231,7 @@
         // Корректный ход времени: timeScale = игровых минут за реальную секунду
         this.gameHours += dt * this.timeScale / 60;
         try {
+          this._autoQuality(dt);
           this.update(dt);
         } catch (err) {
           console.error('[game loop]', err);

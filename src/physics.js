@@ -207,14 +207,18 @@
 
       for (const c of this.colliders) c.update();
       this._rebuildGrid();
-      this.selfCollision(dt);
+      // Самоколлизия через кадр — эффект тот же, стоимость вдвое ниже
+      this._selfTick = (this._selfTick || 0) + 1;
+      if (this._selfTick & 1) this.selfCollision(dt * 2);
 
       if (this.debugEnabled) this._updateDebug();
     }
 
     _rebuildGrid() {
-      this.grid.clear();
+      // ОПТИМИЗАЦИЯ: переиспользуем массивы ячеек вместо создания новых
+      for (const list of this.grid.values()) list.length = 0;
       const cs = this.cellSize;
+      let cells = 0;
       for (const c of this.colliders) {
         // Регистрируем коллайдер во всех ячейках его AABB
         const minx = Math.floor((c.center.x - c.radii.x) / cs);
@@ -230,6 +234,7 @@
               let list = this.grid.get(key);
               if (!list) { list = []; this.grid.set(key, list); }
               list.push(c);
+              cells++;
             }
       }
     }
