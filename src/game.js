@@ -302,7 +302,6 @@
         case 'bank': this._bank(); break;
         case 'clothes': this._clothes(); break;
         case 'vault': this._secretVault(); break;
-        case 'vault_map': this._findVaultMap(); break;
         case 'nightmarket': this._nightMarket(it); break;
         case 'furniture': this._furniture(); break;
         case 'club': this._club(); break;
@@ -540,36 +539,20 @@
 
     _clothes() { this.ui.open('wardrobe'); }
 
-    /** Каменная табличка возле пика — открывает склад и телепорт к нему */
-    _findVaultMap() {
-      if (this.secrets.has('vault')) {
-        this.notify('🗺 Ты уже знаешь дорогу к складу. Телепорт — на карте (Tab).', 'info');
-        return;
-      }
-      this.secrets.add('vault');
-      this.notify('🗺 На табличке — карта! Обнаружен ТАЙНЫЙ СКЛАД ПРАДЕДА.', 'quest');
-      this.notify('✨ Теперь к нему можно телепортироваться с карты (Tab) бесплатно.', 'info');
-      this.audio.magic();
-      this.achieve('found_vault');
-      this.visited.add('secretvault');
-      if (this.notebook) this.notebook.add('🗺 Нашёл каменную табличку с картой Тайного склада прадеда.', 'place');
-    }
-
     /**
      * ТАЙНЫЙ СКЛАД: легендарные ингредиенты, запас 999 каждого.
      * Товар не заканчивается и не сбрасывается по дням.
      */
+    /** Склад Прадеда — открыт всегда, товар дорогой, но мощный */
     _secretVault() {
-      if (!this.secrets.has('vault')) {
-        this.notify('🔒 Двери запечатаны рунами. Нужна карта — ищи табличку у Пика Наслаждения.', 'warn');
-        this.audio.ui('err');
-        return;
-      }
-      this.ui.open('shop', {
-        label: '🔒 Тайный склад Прадеда', action: 'shop_ing', loc: 'secretvault', vault: true,
-        shop: ['void_sugar', 'time_honey', 'sun_yolk', 'abyss_cocoa', 'titan_cream',
-          'infinity_flour', 'star_powder', 'phoenix_feather', 'dragon_milk', 'moon_sugar',
-          'rainbow_crystal', 'moon_dew', 'glow_mushroom', 'choco_heart', 'vanilla', 'rose_oil'],
+      this.ui.open('actions', {
+        title: '⭐ Склад Прадеда',
+        sub: 'Легендарные припасы. Очень дорого — зато очень мощно.',
+        actions: [
+          { act: 'vault_ing', label: '🧪 Ингредиенты (для крафта легендарных блюд)' },
+          { act: 'vault_food', label: '🍽 Готовые блюда (2000–5000 калорий за штуку)' },
+          { act: 'close', label: 'Уйти' },
+        ],
       });
     }
 
@@ -889,16 +872,7 @@
         case 'travel': {
           const loc = FF.LOC_BY_ID[ds.id];
           // Тайный склад: телепорт по руне, бесплатно, но только зная карту
-          if (loc.secret) {
-            if (!this.secrets.has('vault')) {
-              this.notify('🔒 Ты ещё не знаешь дороги туда.', 'warn'); return;
-            }
-            this.ui.close();
-            this._instantTravel(ds.id);
-            this.notify('✨ Руны переносят тебя в Тайный склад...', 'quest');
-            this.audio.magic();
-            return;
-          }
+
           if (loc.locked && this.furry.stage < 7) { this.notify('🔒 Локация откроется позже.', 'warn'); return; }
           const cls = this.cab.rideClass();
           if (cls.id === 'impossible') {
@@ -960,6 +934,15 @@
           break;
         }
         case 'noop': break;
+        case 'vault_ing': this.ui.open('shop', {
+          label: '⭐ Склад: ингредиенты', action: 'shop_ing', loc: 'secretvault', vault: true,
+          shop: ['void_sugar', 'time_honey', 'sun_yolk', 'abyss_cocoa', 'titan_cream',
+            'infinity_flour', 'star_powder', 'phoenix_feather', 'dragon_milk', 'moon_sugar',
+            'rainbow_crystal', 'moon_dew', 'glow_mushroom', 'choco_heart'] }); break;
+        case 'vault_food': this.ui.open('shop', {
+          label: '⭐ Склад: готовые блюда', action: 'shop', loc: 'secretvault', vault: true,
+          shop: ['void_cake', 'time_pudding', 'sun_omelet', 'abyss_truffle',
+            'titan_shake', 'infinity_loaf'] }); break;
         case 'cab_go': {
           this.ui.close();
           this.cab.startBoarding(ds.id);

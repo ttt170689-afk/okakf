@@ -338,9 +338,6 @@
     <h3>Выбери вид друга</h3>
     <div class="chargrid" id="specGrid"></div>
 
-    <h3>Телосложение</h3>
-    <div class="chargrid" id="buildGrid"></div>
-
     <h3>Цвет шерсти</h3>
     <div class="swatches" id="furSw"></div>
 
@@ -413,21 +410,6 @@
     };
     grid.appendChild(d);
   }
-  // --- Телосложение ---
-  const bGrid = document.getElementById('buildGrid');
-  for (const [id, bd] of Object.entries(FF.BUILDS)) {
-    const d = document.createElement('div');
-    d.className = 'spec build' + (id === sel.build ? ' sel' : '');
-    d.innerHTML = `<div class="e">${bd.icon}</div><div class="n">${bd.name}</div>` +
-      `<div class="bdesc">${bd.desc}</div>`;
-    d.onclick = () => {
-      sel.build = id;
-      [...bGrid.children].forEach((c) => c.classList.remove('sel'));
-      d.classList.add('sel');
-    };
-    bGrid.appendChild(d);
-  }
-
   // --- Цвета шерсти ---
   const furSw = document.getElementById('furSw');
   FF.FUR_COLORS.forEach((c) => {

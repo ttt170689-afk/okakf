@@ -570,12 +570,11 @@
         case 'map': {
           html = head('🗺️ Карта Sugar City',
             `Клик по локации — поездка на Sugar Cab (${FF.CAB.price} 🪙).` +
-            (g.secrets.has('vault') ? ' ✨ Тайный склад — телепорт бесплатно.' : ''));
+            '');
           html += '<div class="p-body"><div class="map">';
           const scale = 1.05, ox = 260, oz = 230;
           for (const l of FF.LOCATIONS) {
             // Секретный склад не показываем, пока не найдена карта
-            if (l.secret && !g.secrets.has('vault')) continue;
             const x = ox + l.x * scale * 0.9, y = oz + l.z * scale * 0.9;
             const vis = g.visited.has(l.id);
             html += `<div class="dot ${vis ? 'vis' : ''} ${l.secret ? 'secret' : ''}"

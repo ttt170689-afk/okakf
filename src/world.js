@@ -1384,13 +1384,9 @@
 
       this.interactables.push({
         id: 'secretvault', pos: new THREE.Vector3(L.x, gy + 2.5, L.z + 3),
-        radius: 6, label: '🔒 Тайный склад: легендарные ингредиенты', action: 'vault',
+        radius: 7, label: '⭐ Склад Прадеда: легендарные припасы', action: 'vault',
       });
-      // Карта-подсказка на Пике Наслаждения
-      this.interactables.push({
-        id: 'vault_map', pos: new THREE.Vector3(L.x + 18, this.heightAt(L.x + 18, L.z + 26) + 1.5, L.z + 26),
-        radius: 6, label: '🗺 Странная каменная табличка', action: 'vault_map',
-      });
+
     }
 
     /* ==================== NPC ==================== */

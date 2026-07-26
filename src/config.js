@@ -381,6 +381,13 @@
     F('mega_pizza', 'Мега-пицца 1 метр', '🍕', 130, 150, 'colossal', 'ГИГАНТ'),
     F('sweet_barrel', 'Бочка сладостей', '🛢️', 240, 270, 'colossal', 'ГИГАНТ'),
     F('feast_cart', 'Тележка яств', '🛒', 380, 430, 'colossal', 'ГИГАНТ'),
+    // --- ТОВАР СКЛАДА ПРАДЕДА: очень дорого, очень мощно ---
+    F('void_cake', 'Торт Пустоты', '🕳️', 2500, 3200, 'colossal', 'склад', { legendary: true }),
+    F('time_pudding', 'Пудинг Времени', '⏳', 3200, 4000, 'colossal', 'склад', { legendary: true }),
+    F('sun_omelet', 'Солнечный омлет', '☀️', 2000, 2600, 'colossal', 'склад', { legendary: true }),
+    F('abyss_truffle', 'Трюфель Бездны', '🌑', 2800, 3500, 'colossal', 'склад', { legendary: true }),
+    F('titan_shake', 'Коктейль Титанов', '⚡', 5000, 6500, 'pump', 'склад', { legendary: true }),
+    F('infinity_loaf', 'Каравай Бесконечности', '♾️', 4000, 5000, 'colossal', 'склад', { legendary: true }),
     F('pigeon_crumb', 'Крошка для голубей', '🐦', 0.1, 0, 'tiny', 'площадь'),
     F('duck_bread', 'Хлеб для уток', '🦆', 0.1, 0, 'tiny', 'парк'),
   ];
@@ -437,12 +444,12 @@
     I('cloudberry', 'Морошка', '🫐', 26, 'ягодная лавка', 'rare'),
     I('maple_syrup', 'Кленовый сироп', '🍁', 20, 'напитки', 'common'),
     // --- СЕКРЕТНЫЕ: только в Тайном складе ---
-    I('void_sugar', 'Сахар Пустоты', '🕳️', 400, 'тайный склад', 'legendary'),
-    I('time_honey', 'Мёд Времени', '⏳', 450, 'тайный склад', 'legendary'),
-    I('sun_yolk', 'Солнечный желток', '☀️', 380, 'тайный склад', 'legendary'),
-    I('abyss_cocoa', 'Какао Бездны', '🌑', 420, 'тайный склад', 'legendary'),
-    I('titan_cream', 'Крем Титанов', '⚡', 500, 'тайный склад', 'legendary'),
-    I('infinity_flour', 'Мука Бесконечности', '♾️', 350, 'тайный склад', 'legendary'),
+    I('void_sugar', 'Сахар Пустоты', '🕳️', 1200, 'склад Прадеда', 'legendary'),
+    I('time_honey', 'Мёд Времени', '⏳', 1500, 'склад Прадеда', 'legendary'),
+    I('sun_yolk', 'Солнечный желток', '☀️', 1100, 'склад Прадеда', 'legendary'),
+    I('abyss_cocoa', 'Какао Бездны', '🌑', 1350, 'склад Прадеда', 'legendary'),
+    I('titan_cream', 'Крем Титанов', '⚡', 1800, 'склад Прадеда', 'legendary'),
+    I('infinity_flour', 'Мука Бесконечности', '♾️', 1000, 'склад Прадеда', 'legendary'),
   ];
 
   /* ============================================================
@@ -515,6 +522,13 @@
     R('family_bucket', 24, 10.0, { meat: 10, flour: 6, cheese: 4, butter: 4, salt: 3 }),
     R('sweet_barrel', 28, 12.0, { sugar: 16, cocoa: 8, cream: 8, honey: 6, nuts: 6 }),
     R('feast_cart', 35, 16.0, { meat: 12, flour: 14, cheese: 8, cream: 8, egg: 10, honey: 5 }),
+    // --- Легендарные рецепты на ингредиентах склада ---
+    R('void_cake', 40, 20.0, { void_sugar: 2, infinity_flour: 2, cream: 10 }),
+    R('time_pudding', 42, 22.0, { time_honey: 2, sun_yolk: 2, milk: 12 }),
+    R('sun_omelet', 38, 18.0, { sun_yolk: 3, butter: 6, salt: 2 }),
+    R('abyss_truffle', 44, 24.0, { abyss_cocoa: 3, titan_cream: 1, sugar: 10 }),
+    R('titan_shake', 48, 28.0, { titan_cream: 3, time_honey: 1, void_sugar: 1, milk: 15 }),
+    R('infinity_loaf', 45, 26.0, { infinity_flour: 4, sun_yolk: 1, yeast: 4 }),
   ];
 
   /* ============================================================
@@ -582,7 +596,7 @@
     { id: 'petshop',    name: 'Товары для друга «Лапа»',      x: 30,  z: 78,  r: 8,  color: 0xf0a8c8, music: 'home' },
     { id: 'nightmarket',name: 'Ночной рынок «Луна»',          x: -14, z: -62, r: 11, color: 0x3a2a6a, music: 'ambient', nightOnly: true },
     // --- СЕКРЕТНЫЙ СКЛАД В ГОРАХ ---
-    { id: 'secretvault', name: '🔒 Тайный склад Прадеда',     x: 4,   z: -232, r: 14, color: 0x9b7bd4, music: 'ambient', secret: true },
+    { id: 'secretvault', name: '⭐ Склад Прадеда',            x: -86, z: 92,  r: 14, color: 0x9b7bd4, music: 'ambient' },
   ];
 
   /* ============================================================
