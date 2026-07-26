@@ -45,7 +45,7 @@
       this.vel.addScaledVector(vec, k);
       // ГИПЕР-ФИЗИКА: живот реагирует сильнее, чем другие зоны
       if (this.zone.id === 'mid_belly' || this.zone.id === 'lower_belly' || this.zone.id === 'upper_belly' || this.zone.id === 'apron_fold') {
-        this.vel.multiplyScalar(1.35 + this.growth * 0.55);
+        this.vel.multiplyScalar(1.35);
       }
     }
 
