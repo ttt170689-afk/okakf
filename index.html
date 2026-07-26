@@ -1,0 +1,545 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,user-scalable=no">
+<title>Толстый Друг: Утопия Наслаждений</title>
+<style>
+  /* ============================================================
+     СТИЛИ ИГРЫ — тёплая пастельная палитра «золотого часа»
+     ============================================================ */
+  :root{
+    --bg:#1b1016; --panel:rgba(32,20,28,.93); --panel2:rgba(46,28,38,.9);
+    --gold:#ffcf8a; --pink:#ff9ec4; --peach:#ffb46b; --cream:#fff2e0;
+    --green:#7cd66b; --red:#ff6b6b; --blue:#8ac6ff;
+    --edge:rgba(255,207,138,.28);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0;height:100%;overflow:hidden;background:var(--bg);
+    font-family:"Segoe UI",system-ui,-apple-system,"Noto Sans",sans-serif;color:var(--cream);
+    -webkit-font-smoothing:antialiased;user-select:none}
+  canvas{display:block;width:100vw;height:100vh}
+  kbd{background:rgba(255,207,138,.18);border:1px solid var(--edge);border-radius:5px;
+    padding:1px 6px;font-size:.85em;font-family:inherit;color:var(--gold);white-space:nowrap}
+  ::-webkit-scrollbar{width:10px}
+  ::-webkit-scrollbar-track{background:rgba(0,0,0,.25)}
+  ::-webkit-scrollbar-thumb{background:rgba(255,207,138,.3);border-radius:6px}
+
+  /* ---------------- HUD ---------------- */
+  #ui{position:fixed;inset:0;pointer-events:none;z-index:10;transition:opacity .3s}
+  .hud{position:absolute;inset:0}
+  .hud-block{position:absolute;pointer-events:none}
+  .top-left{top:14px;left:14px} .top-right{top:14px;right:14px}
+  .bottom-left{bottom:14px;left:14px} .bottom-right{bottom:14px;right:14px}
+  .card{background:var(--panel);border:1px solid var(--edge);border-radius:14px;
+    padding:10px 13px;min-width:230px;backdrop-filter:blur(9px);
+    box-shadow:0 8px 28px rgba(0,0,0,.45)}
+  .card.right{text-align:right;min-width:190px}
+  .row{margin:3px 0;font-size:14px;line-height:1.35}
+  .row.small,.small{font-size:12px;opacity:.82}
+  .row.hl{color:var(--gold)}
+  .tag{background:rgba(255,207,138,.15);border:1px solid var(--edge);border-radius:20px;
+    padding:1px 8px;font-size:11px;margin-left:4px;white-space:nowrap;display:inline-block}
+  .tag.red{background:rgba(255,107,107,.18);border-color:rgba(255,107,107,.4);color:#ffb3b3}
+  .bar{position:relative;height:16px;background:rgba(0,0,0,.42);border-radius:9px;
+    overflow:hidden;margin:5px 0;border:1px solid rgba(255,255,255,.08)}
+  .bar.mini{height:13px}
+  .bar i{display:block;height:100%;border-radius:9px;transition:width .32s cubic-bezier(.2,.9,.3,1)}
+  .bar u{position:absolute;inset:0;text-decoration:none;font-size:10.5px;line-height:16px;
+    text-align:center;text-shadow:0 1px 3px #000;letter-spacing:.2px}
+  .bar.mini u{line-height:13px}
+
+  .crosshair{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:22px;height:22px;display:flex;align-items:center;justify-content:center}
+  .crosshair span{width:6px;height:6px;border-radius:50%;background:rgba(255,255,255,.55);
+    box-shadow:0 0 0 2px rgba(0,0,0,.35),0 0 10px rgba(255,207,138,.6)}
+
+  .prompt{position:absolute;left:50%;bottom:23%;transform:translateX(-50%);text-align:center}
+  .prompt-inner{background:rgba(24,14,20,.85);border:1px solid var(--edge);border-radius:12px;
+    padding:8px 16px;font-size:14px;backdrop-filter:blur(6px);animation:pop .25s ease}
+  @keyframes pop{from{transform:scale(.94);opacity:0}to{transform:scale(1);opacity:1}}
+
+  .speech{position:absolute;left:50%;bottom:33%;transform:translateX(-50%);max-width:min(680px,80vw)}
+  .speech-inner{background:linear-gradient(135deg,rgba(255,158,196,.22),rgba(255,180,107,.18));
+    border:1px solid rgba(255,158,196,.45);border-radius:16px;padding:11px 20px;font-size:16px;
+    text-align:center;backdrop-filter:blur(8px);box-shadow:0 6px 26px rgba(255,120,170,.22);
+    animation:pop .3s ease;font-style:italic}
+
+  .notifications{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);
+    display:flex;flex-direction:column;gap:7px;align-items:center;width:min(560px,86vw)}
+  .note{background:rgba(28,17,24,.92);border:1px solid var(--edge);border-radius:12px;
+    padding:8px 15px;font-size:14px;text-align:center;animation:slide .3s ease;
+    box-shadow:0 6px 20px rgba(0,0,0,.4);width:fit-content;max-width:100%}
+  .note.out{animation:fade .6s forwards}
+  .note-feed{border-color:rgba(124,214,107,.5);background:rgba(30,48,28,.92)}
+  .note-quest{border-color:rgba(138,198,255,.5);background:rgba(24,36,52,.92)}
+  .note-stage{border-color:var(--pink);background:rgba(56,26,42,.95);font-size:16px;font-weight:600}
+  .note-warn{border-color:rgba(255,107,107,.5);background:rgba(52,26,26,.92)}
+  @keyframes slide{from{transform:translateY(14px);opacity:0}to{transform:none;opacity:1}}
+  @keyframes fade{to{opacity:0;transform:translateY(-12px)}}
+
+  .zone-info{position:absolute;left:50%;top:56%;transform:translateX(-50%);width:270px}
+  .zone-card{background:rgba(28,17,24,.88);border:1px solid var(--edge);border-radius:12px;
+    padding:8px 12px;font-size:13px;backdrop-filter:blur(6px)}
+
+  /* ---------------- ПАНЕЛИ ---------------- */
+  .panel{position:fixed;inset:0;background:rgba(12,7,11,.82);backdrop-filter:blur(10px);
+    z-index:40;pointer-events:auto;display:flex;flex-direction:column;align-items:center;
+    padding:26px;overflow:auto}
+  .panel.hidden{display:none}
+  .p-head{width:min(1000px,96vw);position:relative;margin-bottom:14px}
+  .p-head h2{margin:0;font-size:26px;color:var(--gold)}
+  .p-head p{margin:5px 0 0;opacity:.8;font-size:14px}
+  .p-head .x{position:absolute;right:0;top:0;background:rgba(255,107,107,.18);
+    border:1px solid rgba(255,107,107,.45);color:#ffc9c9;border-radius:10px;
+    width:38px;height:38px;font-size:17px;cursor:pointer}
+  .p-head .x:hover{background:rgba(255,107,107,.32)}
+  .p-body{width:min(1000px,96vw);background:var(--panel2);border:1px solid var(--edge);
+    border-radius:16px;padding:18px}
+  .p-body h3{margin:16px 0 9px;color:var(--peach);font-size:17px}
+  .p-body h3:first-child{margin-top:0}
+  .p-body h4{margin:12px 0 6px;color:var(--pink);font-size:14px}
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px}
+  .item{background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);
+    border-radius:12px;padding:11px;text-align:center;cursor:pointer;transition:.15s}
+  .item:hover{background:rgba(255,207,138,.14);border-color:var(--edge);transform:translateY(-2px)}
+  .item.sel{border-color:var(--gold);background:rgba(255,207,138,.18)}
+  .item.dis{opacity:.42;cursor:default} .item.dis:hover{transform:none;background:rgba(255,255,255,.05)}
+  .item .ic{font-size:30px;line-height:1.15}
+  .item .nm{font-size:13px;margin-top:3px}
+  .item .sm{font-size:11px;opacity:.75}
+  .item .sm.red{color:#ffa0a0}
+  .empty{opacity:.55;font-size:13px;padding:12px;grid-column:1/-1}
+  .hint{font-size:12.5px;opacity:.72;margin:12px 0 0;line-height:1.5}
+
+  .list{display:flex;flex-direction:column;gap:8px}
+  .recipe{display:flex;align-items:center;gap:12px;background:rgba(255,255,255,.05);
+    border:1px solid rgba(255,255,255,.1);border-radius:12px;padding:10px 13px;cursor:pointer;transition:.15s}
+  .recipe:hover{background:rgba(255,207,138,.13);border-color:var(--edge)}
+  .recipe.dis{opacity:.45;cursor:default}.recipe.dis:hover{background:rgba(255,255,255,.05)}
+  .recipe .ic{font-size:26px;min-width:34px;text-align:center}
+  .recipe .body{flex:1;font-size:14px}
+  .recipe .go{color:var(--gold);font-size:13px;white-space:nowrap}
+  .ok{color:#a8e6a0} .no{color:#ffa0a0}
+
+  .dlg{display:flex;gap:14px;align-items:center;margin-bottom:14px}
+  .portrait{width:76px;height:76px;border-radius:50%;border:2px solid var(--edge);flex-shrink:0;
+    box-shadow:0 0 22px rgba(255,207,138,.22)}
+  .dlg .text{font-size:16px;line-height:1.5;font-style:italic}
+
+  .btnrow{display:flex;gap:9px;flex-wrap:wrap;margin-top:14px}
+  .btnrow.vert{flex-direction:column}
+  .btnrow button,.settings button{background:rgba(255,207,138,.14);border:1px solid var(--edge);
+    color:var(--cream);border-radius:11px;padding:11px 17px;font-size:14px;cursor:pointer;
+    font-family:inherit;transition:.15s;text-align:left}
+  .btnrow button:hover{background:rgba(255,207,138,.26);transform:translateX(3px)}
+
+  .settings{display:flex;flex-direction:column;gap:11px;font-size:14px}
+  .settings label{display:flex;align-items:center;justify-content:space-between;gap:14px}
+  .settings input[type=range]{flex:1;max-width:280px;accent-color:var(--peach)}
+  .settings select{background:rgba(255,255,255,.08);border:1px solid var(--edge);color:var(--cream);
+    border-radius:8px;padding:6px 10px;font-family:inherit}
+
+  .map{position:relative;width:100%;height:520px;background:
+    radial-gradient(circle at 30% 40%,rgba(124,214,107,.10),transparent 60%),
+    radial-gradient(circle at 70% 20%,rgba(138,198,255,.10),transparent 55%),
+    rgba(0,0,0,.32);border-radius:14px;overflow:auto;border:1px solid var(--edge)}
+  .map .dot{position:absolute;width:15px;height:15px;border-radius:50%;background:rgba(255,255,255,.28);
+    border:2px solid var(--edge);cursor:pointer;transform:translate(-50%,-50%);transition:.15s}
+  .map .dot.vis{background:var(--peach);box-shadow:0 0 12px rgba(255,180,107,.7)}
+  .map .dot:hover{transform:translate(-50%,-50%) scale(1.5)}
+  .map .dot span{position:absolute;left:19px;top:-4px;font-size:11px;white-space:nowrap;
+    background:rgba(0,0,0,.55);padding:1px 6px;border-radius:6px}
+  .map .me{position:absolute;width:13px;height:13px;border-radius:50%;background:var(--blue);
+    transform:translate(-50%,-50%);box-shadow:0 0 14px var(--blue);animation:pulse 1.6s infinite}
+  .map .fr{position:absolute;width:17px;height:17px;border-radius:50%;background:var(--pink);
+    transform:translate(-50%,-50%);box-shadow:0 0 14px var(--pink)}
+  @keyframes pulse{50%{transform:translate(-50%,-50%) scale(1.35)}}
+
+  .statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:8px}
+  .statgrid div{background:rgba(255,255,255,.05);border-radius:11px;padding:11px;text-align:center}
+  .statgrid b{display:block;font-size:20px;color:var(--gold)}
+  .statgrid span{font-size:11.5px;opacity:.75}
+  .zones{max-height:420px;overflow:auto;padding-right:6px}
+  .zrow{display:flex;align-items:center;gap:9px;font-size:12.5px;padding:2.5px 0}
+  .zn{width:210px;flex-shrink:0;opacity:.9}
+  .zb{flex:1;height:9px;background:rgba(0,0,0,.4);border-radius:5px;overflow:hidden}
+  .zb i{display:block;height:100%;background:linear-gradient(90deg,#ff9ec4,#ffd76b);transition:width .3s}
+  .zp{width:42px;text-align:right;opacity:.8}
+  .zs{width:150px;font-size:11px;opacity:.6;text-align:right}
+
+  .keys{display:grid;grid-template-columns:repeat(auto-fit,minmax(290px,1fr));gap:7px;font-size:13.5px}
+  .tips{font-size:13.5px;line-height:1.7;opacity:.88;padding-left:20px}
+
+  /* ---------------- СЮЖЕТ ---------------- */
+  .story-avail{display:flex;align-items:center;gap:12px;margin:12px 0;padding:12px 14px;cursor:pointer;
+    background:linear-gradient(135deg,rgba(255,158,196,.16),rgba(255,207,138,.12));
+    border:1px solid rgba(255,158,196,.45);border-radius:13px;transition:.15s;
+    animation:glowpulse 2.4s ease-in-out infinite}
+  .story-avail:hover{background:linear-gradient(135deg,rgba(255,158,196,.28),rgba(255,207,138,.2));transform:translateX(3px)}
+  .story-avail .ic{font-size:27px}.story-avail .body{flex:1}.story-avail .go{color:var(--pink);white-space:nowrap}
+  @keyframes glowpulse{50%{box-shadow:0 0 24px rgba(255,158,196,.3)}}
+  .story-lines p{font-size:16px;line-height:1.65;margin:11px 0;padding-left:14px;
+    border-left:2px solid rgba(255,207,138,.3)}
+  .story-lines p.narr{font-style:italic;opacity:.65;border-left-color:rgba(255,255,255,.15);font-size:14.5px}
+  .story-reply{margin-top:16px;padding:14px 17px;border-radius:13px;font-size:16px;line-height:1.6;
+    background:linear-gradient(135deg,rgba(255,158,196,.18),rgba(138,198,255,.1));
+    border:1px solid rgba(255,158,196,.4);animation:pop .35s ease}
+
+  /* ---------------- ФИЗИКА САЛОНА ---------------- */
+  .cabin-hud{position:absolute;left:50%;top:16px;transform:translateX(-50%);width:min(340px,90vw)}
+  .cabin-card{background:rgba(28,17,24,.93);border:1px solid var(--edge);border-radius:14px;
+    padding:10px 14px;backdrop-filter:blur(9px);box-shadow:0 8px 28px rgba(0,0,0,.5)}
+  .cabin-hud.danger .cabin-card{border-color:#ff3b30;
+    animation:dangerpulse 1.1s ease-in-out infinite}
+  @keyframes dangerpulse{50%{box-shadow:0 0 26px rgba(255,59,48,.45)}}
+  .cabin-trap{margin-top:9px;padding-top:9px;border-top:1px solid rgba(255,59,48,.4);text-align:center}
+  .cabin-trap b{color:#ff6b6b;font-size:16px;display:block;margin-bottom:6px;
+    animation:blink .7s steps(2) infinite}
+  @keyframes blink{50%{opacity:.45}}
+
+  /* ---------------- ТАБЛИЦА ПОСАДКИ ---------------- */
+  .board-now{background:linear-gradient(135deg,rgba(255,180,107,.16),rgba(255,158,196,.1));
+    border:1px solid rgba(255,180,107,.4);border-radius:14px;padding:14px 16px;margin-bottom:14px}
+  .board-now b{font-size:17px;color:var(--gold)}
+  .board-now p{margin:6px 0 12px;font-size:14px;line-height:1.5;opacity:.88}
+  .board-table{display:flex;flex-direction:column;gap:3px;font-size:13px}
+  .board-row{display:grid;grid-template-columns:26px 1.1fr 1.3fr .8fr .6fr .5fr;gap:8px;
+    padding:7px 10px;border-radius:8px;align-items:center;background:rgba(255,255,255,.04)}
+  .board-row.now{background:linear-gradient(90deg,rgba(255,158,196,.25),rgba(255,180,107,.12));
+    border:1px solid rgba(255,158,196,.5);font-weight:600}
+  .board-row.passed{opacity:.55}
+  .board-row.future{opacity:.75}
+  .board-row .bs{color:var(--gold);font-weight:700;text-align:center}
+  .board-row .bm{color:var(--peach)}
+  .board-row .bt,.board-row .bseat,.board-row .bsp{font-size:11.5px;opacity:.8;text-align:right}
+  .board-desc{padding:8px 14px;font-size:12.5px;font-style:italic;opacity:.85;
+    border-left:2px solid rgba(255,158,196,.5);margin:2px 0 6px 12px}
+
+  .board-details{display:flex;flex-direction:column;gap:6px;margin-top:12px;
+    border-top:1px solid rgba(255,207,138,.22);padding-top:11px}
+  .board-details>div{display:grid;grid-template-columns:110px 1fr;gap:10px;font-size:13px;line-height:1.45}
+  .bd-l{color:var(--peach);font-weight:600}
+  .board-head{display:grid;grid-template-columns:26px 1.1fr 1.3fr .8fr .6fr .5fr;gap:8px;
+    padding:5px 10px;font-size:11px;text-transform:uppercase;letter-spacing:.4px;
+    opacity:.55;border-bottom:1px solid rgba(255,255,255,.12);margin-bottom:4px}
+  .board-head .bt,.board-head .bseat,.board-head .bsp{text-align:right}
+  .board-row{cursor:pointer}
+  .board-row:hover{background:rgba(255,207,138,.12)}
+  .board-desc.now-desc{border-left-color:var(--gold);color:var(--gold);font-style:normal}
+
+  /* ---------------- МИНИ-ИГРЫ ---------------- */
+  .minigame{position:fixed;inset:0;background:rgba(10,6,10,.85);backdrop-filter:blur(8px);
+    z-index:50;display:flex;align-items:center;justify-content:center;pointer-events:auto}
+  .minigame.hidden{display:none}
+  .mg-box{background:var(--panel);border:1px solid var(--edge);border-radius:20px;
+    padding:24px;width:min(620px,94vw);text-align:center;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .mg-box h2{margin:0 0 5px;color:var(--gold)}
+  .mg-box p{margin:0 0 14px;opacity:.8;font-size:14px}
+  .mg-area{position:relative;height:290px;background:rgba(0,0,0,.32);border-radius:15px;
+    overflow:hidden;border:1px solid rgba(255,255,255,.08)}
+  .mg-bar{height:9px;background:rgba(0,0,0,.4);border-radius:5px;margin:13px 0 9px;overflow:hidden}
+  .mg-bar i{display:block;height:100%;width:100%;background:linear-gradient(90deg,#7cd66b,#ffd76b,#ff6b6b);
+    transition:width .1s linear}
+  .mg-score{font-size:17px;margin-bottom:12px}
+  .mg-box button{background:rgba(255,107,107,.18);border:1px solid rgba(255,107,107,.45);
+    color:#ffc9c9;border-radius:11px;padding:9px 20px;cursor:pointer;font-family:inherit;font-size:14px}
+  .mg-target{position:absolute;font-size:34px;cursor:pointer;animation:pop .2s ease;
+    filter:drop-shadow(0 3px 8px rgba(0,0,0,.5))}
+  .mg-target:hover{transform:scale(1.18)}
+  .mg-target.bad{filter:drop-shadow(0 0 10px #ff5555)}
+  .ring{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);width:210px;height:210px;
+    display:flex;align-items:center;justify-content:center}
+  .ring-inner{position:absolute;width:200px;height:200px;border-radius:50%;
+    border:4px solid var(--peach);box-shadow:0 0 26px rgba(255,180,107,.55)}
+  .ring-target{position:absolute;width:172px;height:172px;border-radius:50%;
+    border:3px dashed rgba(255,255,255,.5)}
+  .circle-track{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);
+    width:180px;height:180px;border-radius:50%;border:3px dashed rgba(255,207,138,.5)}
+  .circle-dot{position:absolute;left:50%;top:50%;width:24px;height:24px;margin:-12px;
+    border-radius:50%;background:var(--pink);box-shadow:0 0 18px var(--pink);transform-origin:center}
+  .circle-hint{position:absolute;bottom:14px;left:0;right:0;font-size:13px;opacity:.7}
+
+  /* ---------------- СТАРТОВЫЙ ЭКРАН ---------------- */
+  #start{position:fixed;inset:0;z-index:100;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(circle at 50% 30%,#3a2030,#160c14 70%);overflow:auto;padding:24px}
+  #start.hidden{display:none}
+  .start-box{width:min(880px,96vw);text-align:center}
+  .start-box h1{font-size:clamp(30px,5.4vw,52px);margin:0 0 4px;
+    background:linear-gradient(90deg,#ffcf8a,#ff9ec4,#ffb46b);-webkit-background-clip:text;
+    background-clip:text;color:transparent;letter-spacing:.5px}
+  .start-box .sub{opacity:.82;margin-bottom:20px;font-size:15.5px}
+  .chargrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:10px;margin:12px 0}
+  .spec{background:rgba(255,255,255,.06);border:2px solid transparent;border-radius:14px;
+    padding:12px 8px;cursor:pointer;transition:.15s}
+  .spec:hover{background:rgba(255,207,138,.14)}
+  .spec.sel{border-color:var(--gold);background:rgba(255,207,138,.2)}
+  .spec .e{font-size:34px} .spec .n{font-size:13px;margin-top:3px}
+  .swatches{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin:10px 0}
+  .sw{width:30px;height:30px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:.12s}
+  .sw:hover{transform:scale(1.15)} .sw.sel{border-color:#fff;box-shadow:0 0 12px rgba(255,255,255,.6)}
+  #start input[type=text]{background:rgba(255,255,255,.09);border:1px solid var(--edge);
+    color:var(--cream);border-radius:11px;padding:11px 15px;font-size:16px;width:270px;
+    text-align:center;font-family:inherit}
+  .play{margin-top:20px;background:linear-gradient(135deg,#ff9ec4,#ffb46b);border:none;color:#2a1018;
+    font-weight:700;font-size:19px;padding:15px 46px;border-radius:15px;cursor:pointer;
+    box-shadow:0 10px 32px rgba(255,158,196,.35);font-family:inherit;transition:.15s}
+  .play:hover{transform:translateY(-2px);box-shadow:0 14px 40px rgba(255,158,196,.5)}
+  .secondary{margin-top:11px;background:rgba(255,255,255,.09);border:1px solid var(--edge);
+    color:var(--cream);padding:10px 26px;border-radius:12px;cursor:pointer;font-family:inherit;font-size:14px}
+  .start-box h3{color:var(--peach);font-size:15px;margin:18px 0 6px}
+  .loading{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;
+    flex-direction:column;gap:14px;background:#160c14;z-index:120;font-size:17px}
+  .loading.hidden{display:none}
+  .spinner{width:46px;height:46px;border:4px solid rgba(255,207,138,.2);border-top-color:var(--gold);
+    border-radius:50%;animation:spin 1s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+  .fps{position:fixed;right:8px;bottom:8px;font-size:11px;opacity:.4;z-index:11}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="ui"></div>
+<div class="fps" id="fps"></div>
+
+<!-- ================= СТАРТОВЫЙ ЭКРАН ================= -->
+<div id="start">
+  <div class="start-box">
+    <h1>🐾 Толстый Друг</h1>
+    <div class="sub">Утопия Наслаждений · 3D Immersive Sim · 60 зон роста · Sugar City</div>
+
+    <h3>Выбери вид друга</h3>
+    <div class="chargrid" id="specGrid"></div>
+
+    <h3>Цвет шерсти</h3>
+    <div class="swatches" id="furSw"></div>
+
+    <h3>Цвет глаз</h3>
+    <div class="swatches" id="eyeSw"></div>
+
+    <h3>Имя друга</h3>
+    <input type="text" id="nameIn" value="Пушистик" maxlength="18">
+
+    <div>
+      <button class="play" id="playBtn">▶ Начать заботиться</button>
+    </div>
+    <button class="secondary" id="loadBtn">📂 Загрузить сохранение</button>
+    <p class="hint" style="max-width:620px;margin:18px auto 0;text-align:left;opacity:.7;font-size:13px">
+      <b>Как играть:</b> корми друга (F), гладь и массируй (ЛКМ/ПКМ), карабкайся по складкам
+      (Shift+ЛКМ), присядь (Ctrl) чтобы попасть под живот, готовь на кухне (C), вари эликсиры
+      у Артёма (B), катайся на такси (T). Еды мало — ищи ингредиенты и выполняй задания.
+      <kbd>F1</kbd> — полная справка. Игра сохраняется автоматически.
+    </p>
+  </div>
+</div>
+
+<div class="loading hidden" id="loading">
+  <div class="spinner"></div>
+  <div id="loadingText">Строим Sugar City...</div>
+</div>
+
+<!-- ================= СКРИПТЫ ================= -->
+<script src="libs/three.min.js"></script>
+<script src="src/config.js"></script>
+<script src="src/utils.js"></script>
+<script src="src/audio.js"></script>
+<script src="src/physics.js"></script>
+<script src="src/furry.js"></script>
+<script src="src/world.js"></script>
+<script src="src/hands.js"></script>
+<script src="src/player.js"></script>
+<script src="src/gameplay.js"></script>
+<script src="src/story.js"></script>
+<script src="src/systems.js"></script>
+<script src="src/minigames.js"></script>
+<script src="src/boarding.js"></script>
+<script src="src/cabin.js"></script>
+<script src="src/ui.js"></script>
+<script src="src/game.js"></script>
+<script>
+/* ============================================================
+   Точка входа: экран создания персонажа → запуск игры
+   ============================================================ */
+(function () {
+  'use strict';
+  const FF = window.FF;
+  const sel = { species: 'fox', furColor: null, eyeColor: FF.EYE_COLORS[0], name: 'Пушистик' };
+  const emojis = { fox: '🦊', wolf: '🐺', dragon: '🐉', lion: '🦁', cat: '🐱', rabbit: '🐰', bear: '🐻', raccoon: '🦝' };
+
+  // --- Виды ---
+  const grid = document.getElementById('specGrid');
+  for (const [id, s] of Object.entries(FF.SPECIES)) {
+    const d = document.createElement('div');
+    d.className = 'spec' + (id === sel.species ? ' sel' : '');
+    d.innerHTML = `<div class="e">${emojis[id]}</div><div class="n">${s.name}</div>`;
+    d.onclick = () => {
+      sel.species = id;
+      [...grid.children].forEach((c) => c.classList.remove('sel'));
+      d.classList.add('sel');
+      // Сброс цвета шерсти на дефолт вида
+      sel.furColor = null;
+      [...document.getElementById('furSw').children].forEach((c) => c.classList.remove('sel'));
+    };
+    grid.appendChild(d);
+  }
+  // --- Цвета шерсти ---
+  const furSw = document.getElementById('furSw');
+  FF.FUR_COLORS.forEach((c) => {
+    const d = document.createElement('div');
+    d.className = 'sw';
+    d.style.background = '#' + c.toString(16).padStart(6, '0');
+    d.onclick = () => {
+      sel.furColor = c;
+      [...furSw.children].forEach((x) => x.classList.remove('sel'));
+      d.classList.add('sel');
+    };
+    furSw.appendChild(d);
+  });
+  // --- Цвета глаз ---
+  const eyeSw = document.getElementById('eyeSw');
+  FF.EYE_COLORS.forEach((c, i) => {
+    const d = document.createElement('div');
+    d.className = 'sw' + (i === 0 ? ' sel' : '');
+    d.style.background = '#' + c.toString(16).padStart(6, '0');
+    d.onclick = () => {
+      sel.eyeColor = c;
+      [...eyeSw.children].forEach((x) => x.classList.remove('sel'));
+      d.classList.add('sel');
+    };
+    eyeSw.appendChild(d);
+  });
+
+  const names = ['Пушистик', 'Мурзик', 'Барни', 'Сладкий', 'Персик', 'Тортик', 'Пончик', 'Медок'];
+  document.getElementById('nameIn').value = names[Math.floor(Math.random() * names.length)];
+
+  function boot(doLoad) {
+    sel.name = document.getElementById('nameIn').value.trim() || 'Пушистик';
+    document.getElementById('start').classList.add('hidden');
+    const loading = document.getElementById('loading');
+    loading.classList.remove('hidden');
+    setTimeout(() => {
+      try {
+        const game = new FF.GameClass(document.getElementById('c'), sel);
+        if (doLoad) game.load();
+        setupPost(game);
+        game.start();
+        loading.classList.add('hidden');
+        game.audio.init();
+        // FPS-счётчик
+        const fpsEl = document.getElementById('fps');
+        let frames = 0, t0 = performance.now();
+        setInterval(() => {
+          const now = performance.now();
+          fpsEl.textContent = Math.round(frames * 1000 / (now - t0)) + ' FPS';
+          frames = 0; t0 = now;
+        }, 1000);
+        (function count() { frames++; requestAnimationFrame(count); })();
+      } catch (e) {
+        console.error(e);
+        loading.innerHTML = '<div style="color:#ff9a9a;max-width:600px;text-align:center">' +
+          '<b>Ошибка запуска:</b><br>' + e.message + '<br><br><small>' + (e.stack || '').split('\n').slice(0, 5).join('<br>') + '</small></div>';
+      }
+    }, 60);
+  }
+
+  /**
+   * Простая пост-обработка без внешних зависимостей:
+   * bloom (яркие области) + виньетка + зерно + хроматическая аберрация.
+   */
+  function setupPost(game) {
+    const THREE = window.THREE;
+    const W = () => window.innerWidth, H = () => window.innerHeight;
+    const rtScene = new THREE.WebGLRenderTarget(W(), H(), { type: THREE.HalfFloatType });
+    const rtBrightA = new THREE.WebGLRenderTarget(W() / 2, H() / 2, { type: THREE.HalfFloatType });
+    const rtBrightB = new THREE.WebGLRenderTarget(W() / 2, H() / 2, { type: THREE.HalfFloatType });
+
+    const quadScene = new THREE.Scene();
+    const quadCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+    const quadGeo = new THREE.PlaneGeometry(2, 2);
+
+    const brightMat = new THREE.ShaderMaterial({
+      uniforms: { tD: { value: null }, thr: { value: FF.CONFIG.post.bloomThreshold } },
+      vertexShader: 'varying vec2 v;void main(){v=uv;gl_Position=vec4(position.xy,0.,1.);}',
+      fragmentShader: `uniform sampler2D tD;uniform float thr;varying vec2 v;
+        void main(){vec3 c=texture2D(tD,v).rgb;float l=dot(c,vec3(.299,.587,.114));
+        gl_FragColor=vec4(c*smoothstep(thr,thr+.35,l),1.);}`,
+    });
+    const blurMat = new THREE.ShaderMaterial({
+      uniforms: { tD: { value: null }, dir: { value: new THREE.Vector2(1, 0) }, res: { value: new THREE.Vector2(W() / 2, H() / 2) } },
+      vertexShader: 'varying vec2 v;void main(){v=uv;gl_Position=vec4(position.xy,0.,1.);}',
+      fragmentShader: `uniform sampler2D tD;uniform vec2 dir,res;varying vec2 v;
+        void main(){vec2 t=dir/res;vec3 s=texture2D(tD,v).rgb*.227;
+        s+=texture2D(tD,v+t*1.38).rgb*.316;s+=texture2D(tD,v-t*1.38).rgb*.316;
+        s+=texture2D(tD,v+t*3.23).rgb*.070;s+=texture2D(tD,v-t*3.23).rgb*.070;
+        gl_FragColor=vec4(s,1.);}`,
+    });
+    const finalMat = new THREE.ShaderMaterial({
+      uniforms: {
+        tD: { value: null }, tB: { value: null }, time: { value: 0 },
+        bloom: { value: FF.CONFIG.post.bloomStrength },
+        vig: { value: FF.CONFIG.post.vignette },
+        grain: { value: FF.CONFIG.post.grain },
+        ca: { value: FF.CONFIG.post.chromatic },
+      },
+      vertexShader: 'varying vec2 v;void main(){v=uv;gl_Position=vec4(position.xy,0.,1.);}',
+      fragmentShader: `uniform sampler2D tD,tB;uniform float time,bloom,vig,grain,ca;varying vec2 v;
+        float rnd(vec2 p){return fract(sin(dot(p,vec2(12.9898,78.233)))*43758.5453);}
+        void main(){
+          vec2 d=v-0.5;float r2=dot(d,d);
+          // Хроматическая аберрация к краям
+          vec3 c;
+          c.r=texture2D(tD,v+d*ca*r2*6.0).r;
+          c.g=texture2D(tD,v).g;
+          c.b=texture2D(tD,v-d*ca*r2*6.0).b;
+          c += texture2D(tB,v).rgb*bloom;
+          // Виньетка
+          c *= 1.0 - vig*smoothstep(0.18,0.85,r2*1.6);
+          // Плёночное зерно
+          c += (rnd(v*vec2(1024.,768.)+time)-0.5)*grain;
+          // Тёплый ЛУТ «золотого часа»
+          c = mix(c, c*vec3(1.06,0.99,0.93)+vec3(0.02,0.006,0.0), 0.55);
+          gl_FragColor=vec4(c,1.0);
+        }`,
+    });
+    const quad = new THREE.Mesh(quadGeo, finalMat);
+    quadScene.add(quad);
+
+    game.composer = {
+      setSize(w, h) {
+        rtScene.setSize(w, h);
+        rtBrightA.setSize(w / 2, h / 2); rtBrightB.setSize(w / 2, h / 2);
+        blurMat.uniforms.res.value.set(w / 2, h / 2);
+      },
+      render() {
+        const r = game.renderer;
+        r.setRenderTarget(rtScene);
+        r.render(game.scene, game.camera);
+        // bright pass
+        quad.material = brightMat; brightMat.uniforms.tD.value = rtScene.texture;
+        r.setRenderTarget(rtBrightA); r.render(quadScene, quadCam);
+        // blur H
+        quad.material = blurMat; blurMat.uniforms.tD.value = rtBrightA.texture;
+        blurMat.uniforms.dir.value.set(1, 0);
+        r.setRenderTarget(rtBrightB); r.render(quadScene, quadCam);
+        // blur V
+        blurMat.uniforms.tD.value = rtBrightB.texture;
+        blurMat.uniforms.dir.value.set(0, 1);
+        r.setRenderTarget(rtBrightA); r.render(quadScene, quadCam);
+        // final
+        quad.material = finalMat;
+        finalMat.uniforms.tD.value = rtScene.texture;
+        finalMat.uniforms.tB.value = rtBrightA.texture;
+        finalMat.uniforms.time.value = performance.now() * 0.001;
+        r.setRenderTarget(null); r.render(quadScene, quadCam);
+      },
+    };
+  }
+
+  document.getElementById('playBtn').onclick = () => boot(false);
+  const loadBtn = document.getElementById('loadBtn');
+  if (!localStorage.getItem(FF.CONFIG.save.key)) loadBtn.style.display = 'none';
+  loadBtn.onclick = () => boot(true);
+})();
+</script>
+</body>
+</html>
