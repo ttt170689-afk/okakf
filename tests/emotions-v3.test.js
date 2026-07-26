@@ -222,3 +222,58 @@ console.log('=== 8. СОХРАНЕНИЕ ===');
 
 console.log('\nИТОГО: ' + pass + ' пройдено, ' + fail + ' провалено');
 if (fail) process.exitCode = 1;
+
+console.log('=== 9. ПОДОЙТИ ВПЛОТНУЮ (без невидимых стен) ===');
+{
+  const scene2 = new THREE.Scene();
+  const world2 = new FF.World(scene2, { shadowMap:{}, capabilities:{} }, audio);
+  const HX = -62, HZ = 94;   // чистый двор без построек
+
+  /** Идём прямо на друга и смотрим, насколько глубоко удалось войти */
+  const walkInto = (cal) => {
+    const f = new FF.FurryEngine(scene2,
+      { species:'dragon', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio);
+    f.calories = cal; f._updateGrowthTargets(true);
+    f.root.position.set(HX, 0, HZ);
+    for (let i = 0; i < 30; i++) f.update(dt, 12);
+    const cam = new THREE.PerspectiveCamera(75, 1.6, 0.1, 1000);
+    const p = new FF.PlayerController(cam, world2, f, audio);
+    p.pos.set(HX, world2.heightAt(HX, HZ + 8), HZ + 8);
+    p.yaw = 0; p.keys.KeyW = true;
+    let contact = 0, inside = 0;
+    for (let i = 0; i < 500; i++) {
+      p.update(dt); f.update(dt, 12);
+      if (p.contact) contact++;
+      if (p._isInsideBody()) inside++;
+    }
+    return { contact, inside, stage: f.stage };
+  };
+
+  /* Двухслойная модель: игрок обязан ДОЙТИ до плоти и мять её,
+   * но не проваливаться внутрь туши. */
+  for (const cal of [4500, 60000, 800000]) {
+    const r = walkInto(cal, false);
+    t('доходит до тела (стадия ' + r.stage + ')', r.contact > 100,
+      'кадров контакта=' + r.contact);
+    t('не проваливается внутрь (стадия ' + r.stage + ')', r.inside === 0,
+      'кадров внутри=' + r.inside);
+  }
+
+  // Опора сверху обязана сохраниться
+  const f2 = new FF.FurryEngine(scene2,
+    { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio);
+  f2.calories = 250000; f2._updateGrowthTargets(true);
+  f2.root.position.set(HX, 0, HZ);
+  for (let i = 0; i < 40; i++) f2.update(dt, 12);
+  const cam2 = new THREE.PerspectiveCamera(75, 1.6, 0.1, 1000);
+  const p2 = new FF.PlayerController(cam2, world2, f2, audio);
+  p2.pos.set(HX, f2.topY() + 2.5, HZ + 0.4);
+  for (let i = 0; i < 240; i++) { p2.update(dt); f2.update(dt, 12); }
+  const ground = world2.heightAt(HX, HZ + 0.4);
+  t('на животе всё ещё можно стоять', p2.pos.y > ground + 1,
+    'y=' + p2.pos.y.toFixed(2) + ' земля=' + ground.toFixed(2));
+  t('режим onbelly включается', p2.mode === 'onbelly', p2.mode);
+}
+
+console.log('\nВСЕГО: ' + pass + ' пройдено, ' + fail + ' провалено');
+if (fail) process.exitCode = 1;

@@ -61,29 +61,59 @@
       const S = this.furry.species.scale;
       const bs = this.furry.bodyScale;
 
-      // Центр = якорь + смещение роста + динамика жира
+      /* Центр = якорь + доля смещения плоти.
+       *
+       * Коэффициент 0.55 был подобран, когда growth не превышал 1. После
+       * появления overdrive (рост продолжается за пределы 1.0) центр стал
+       * уезжать дальше, чем реально уходит кожа, и эллипсоид выступал
+       * впереди меша на метры — игрок упирался в пустоту.
+       *
+       * CENTER_FIT держит центр там же, где физически оказалась плоть. */
       const disp = _tmpV1;
       nd.displacement(disp);
-      // Центр эллипсоида сдвигаем на половину прироста — чтобы объём «нарастал» наружу
       this.center.set(
-        (nd.base.x + disp.x * 0.55) * S,
-        (nd.base.y + disp.y * 0.55) * S,
-        (nd.base.z + disp.z * 0.55) * S
+        (nd.base.x + disp.x * CENTER_FIT) * S,
+        (nd.base.y + disp.y * CENTER_FIT) * S,
+        (nd.base.z + disp.z * CENTER_FIT) * S
       );
 
-      // Полуоси: базовый радиус зоны + прирост по направлению выпирания
+      /* Полуоси коллайдера.
+       *
+       * ВАЖНО: раньше сюда шёл полный gain, да ещё с множителями до 1.1 —
+       * эллипсоид получался заметно больше видимого меша. У гиганта живот
+       * «торчал» коллайдером на 13 метров дальше кожи, и игрок упирался в
+       * пустой воздух далеко от друга. Это и была воздушная стенка.
+       *
+       * Меш смещает вершину лишь на долю gain (вес зоны в скиннинге редко
+       * равен единице), поэтому коллайдер калибруем тем же множителем
+       * COLLIDER_FIT и не позволяем ему выпирать сильнее плоти. */
       const g = nd.growth;
-      const grow = Math.abs(z.gain) * g;
-      const base = z.radius * (0.72 + g * 0.5);
+      const grow = Math.abs(z.gain) * g * COLLIDER_FIT;
+      /* Базовый радиус зоны. У худого друга зоны почти не выпирают, но
+       * эллипсоид всё равно занимал полный zone.radius и держал игрока в
+       * полуметре от кожи. Поэтому на малом росте радиус поджимаем сильнее:
+       * коллайдер должен облегать тело, а не висеть в воздухе вокруг него. */
+      // g может превышать 1 (overdrive поздних стадий) — тогда прирост
+      // базового радиуса замедляем, иначе эллипсоид снова обгонит кожу.
+      const gBase = g <= 1 ? g : 1 + (g - 1) * 0.5;
+      const base = z.radius * (0.72 + gBase * 0.5) * BASE_FIT;
       const dir = nd.dir;
-      // Вдоль направления роста эллипсоид вытягивается сильнее
+      // Вдоль направления роста эллипсоид вытягивается чуть сильнее
       this.radii.set(
-        (base + grow * (0.35 + Math.abs(dir.x) * 0.75)) * S,
-        (base + grow * (0.35 + Math.abs(dir.y) * 0.75)) * S,
-        (base + grow * (0.35 + Math.abs(dir.z) * 0.75)) * S
+        (base + grow * (0.22 + Math.abs(dir.x) * 0.42)) * S,
+        (base + grow * (0.22 + Math.abs(dir.y) * 0.42)) * S,
+        (base + grow * (0.22 + Math.abs(dir.z) * 0.42)) * S
       );
       // Впадины (пупок, борозда) не выпирают — коллайдер остаётся маленьким
       if (z.inverted) this.radii.multiplyScalar(0.55);
+
+      /* Если доступна подгонка по мешу — она главнее формул: коллайдер
+       * обязан совпадать с видимой кожей, иначе появляется либо воздушная
+       * стенка, либо проход сквозь друга. */
+      if (this.fitted) {
+        this.center.copy(this.fitted.center);
+        this.radii.copy(this.fitted.radii);
+      }
 
       // Мир
       this.worldCenter.copy(this.center).multiplyScalar(bs);
@@ -143,6 +173,17 @@
   }
 
   // Переиспользуемые векторы — ноль аллокаций в горячем цикле
+  /* Подгонка коллайдеров под визуальный меш. Значение подобрано так, чтобы
+   * поверхность эллипсоида совпадала с кожей: больше — появляется воздушная
+   * стенка, меньше — игрок проваливается внутрь до отрисованной плоти. */
+  const COLLIDER_FIT = 0.08;
+  /* Насколько центр эллипсоида следует за смещением плоти. Меш двигает
+   * вершину на долю от displacement (вес зоны в скиннинге < 1), поэтому
+   * центр коллайдера тоже не должен уезжать на полное смещение. */
+  const CENTER_FIT = 0.15;
+  /* Общий поджим базового радиуса зоны под визуальную оболочку. */
+  const BASE_FIT = 0.85;
+
   const _tmpV1 = new THREE.Vector3();
   const _tmpV2 = new THREE.Vector3();
   const _tmpV3 = new THREE.Vector3();
@@ -153,6 +194,87 @@
    * 2. ГЛАВНЫЙ КЛАСС ФИЗИКИ ТЕЛА
    * ============================================================ */
   class BodyPhysics {
+    /**
+     * Самокалибровка коллайдеров по мешу.
+     *
+     * Подгонять эллипсоиды формулами оказалось тупиком: меш деформируется
+     * взвешенной суммой смещений всех зон (скиннинг), и никакая комбинация
+     * коэффициентов не совпадает с кожей на всех стадиях сразу. Слишком
+     * большой коллайдер = воздушная стенка, слишком малый = игрок проходит
+     * сквозь друга.
+     *
+     * Поэтому полуоси берём НАПРЯМУЮ из вершин, которыми зона управляет.
+     * Тогда коллайдер по построению совпадает с видимой поверхностью —
+     * для любого вида, телосложения и стадии роста.
+     */
+    _buildVertexOwnership() {
+      const f = this.furry;
+      if (!f.wIdx || !f.mesh) return;
+      const K = f.K, n = f.vertexCount;
+      const counts = new Int32Array(f.nodes.length);
+      // Первый проход — сколько вершин у каждой зоны (только доминирующий вес)
+      const owner = new Int32Array(n).fill(-1);
+      for (let v = 0; v < n; v++) {
+        const idx = f.wIdx[v * K];          // веса отсортированы по убыванию
+        if (idx < 0) continue;
+        if (f.wVal[v * K] < 0.34) continue; // слабое влияние не считаем
+        owner[v] = idx;
+        counts[idx]++;
+      }
+      // Второй проход — раскладываем по спискам
+      this.zoneVerts = [];
+      for (let i = 0; i < f.nodes.length; i++) {
+        this.zoneVerts.push(counts[i] > 0 ? new Int32Array(counts[i]) : null);
+      }
+      const fill = new Int32Array(f.nodes.length);
+      for (let v = 0; v < n; v++) {
+        const o = owner[v];
+        if (o < 0) continue;
+        this.zoneVerts[o][fill[o]++] = v;
+      }
+      this._ownershipReady = true;
+    }
+
+    /**
+     * Пересчитать полуоси коллайдеров по фактическому положению вершин.
+     * Считается редко (раз в _fitEvery кадров) — это амортизированно дёшево.
+     */
+    _refitFromMesh() {
+      const f = this.furry;
+      if (!this._ownershipReady) this._buildVertexOwnership();
+      if (!this.zoneVerts) return;
+      const pos = f.mesh.geometry.attributes.position.array;
+      for (let i = 0; i < this.colliders.length; i++) {
+        const c = this.colliders[i];
+        const list = this.zoneVerts[i];
+        if (!list || list.length < 4) { c.fitted = null; continue; }
+        // Центр — среднее положение «своих» вершин
+        let cx = 0, cy = 0, cz = 0;
+        for (let k = 0; k < list.length; k++) {
+          const v = list[k] * 3;
+          cx += pos[v]; cy += pos[v + 1]; cz += pos[v + 2];
+        }
+        const inv = 1 / list.length;
+        cx *= inv; cy *= inv; cz *= inv;
+        // Полуоси — среднеквадратичный охват (устойчивее максимума к выбросам)
+        let sx = 0, sy = 0, sz = 0;
+        for (let k = 0; k < list.length; k++) {
+          const v = list[k] * 3;
+          const dx = pos[v] - cx, dy = pos[v + 1] - cy, dz = pos[v + 2] - cz;
+          sx += dx * dx; sy += dy * dy; sz += dz * dz;
+        }
+        // 1.9σ охватывает почти весь объём зоны, не выпирая за кожу
+        const K_SIGMA = 1.9;
+        c.fitted = c.fitted || { center: new THREE.Vector3(), radii: new THREE.Vector3() };
+        c.fitted.center.set(cx, cy, cz);
+        c.fitted.radii.set(
+          Math.max(0.04, Math.sqrt(sx * inv) * K_SIGMA),
+          Math.max(0.04, Math.sqrt(sy * inv) * K_SIGMA),
+          Math.max(0.04, Math.sqrt(sz * inv) * K_SIGMA)
+        );
+      }
+    }
+
     constructor(furry) {
       this.furry = furry;
       this.colliders = furry.nodes.map((n) => new ZoneCollider(n, furry));
@@ -200,6 +322,11 @@
 
     /** Обновление всех коллайдеров + пространственного хеша */
     update(dt) {
+      /* Подгонка коллайдеров под меш. Раз в несколько кадров: форма тела
+       * меняется плавно, а полный проход по вершинам стоит дороже. */
+      this._fitTick = (this._fitTick || 0) + 1;
+      if (this._fitTick % 6 === 0 || !this._ownershipReady) this._refitFromMesh();
+
       this.stats.broadChecks = 0;
       this.stats.narrowChecks = 0;
       this.stats.contacts = 0;
@@ -266,6 +393,14 @@
      */
     resolvePlayer(worldPos, velocity, radius, height, dt) {
       const f = this.furry;
+      /* Пределы мягкого погружения (метры при bodyScale = 1).
+       * base    — даже твёрдая зона слегка проминается;
+       * soft    — надбавка за мягкость и налитость зоны;
+       * burrow  — бонус, когда игрок лезет или ползёт по телу. */
+      const PC = FF.CONFIG.player;
+      const C_SINK_BASE   = PC.sinkBase   !== undefined ? PC.sinkBase   : 0.10;
+      const C_SINK_SOFT   = PC.sinkSoft   !== undefined ? PC.sinkSoft   : 0.45;
+      const C_SINK_BURROW = PC.sinkBurrow !== undefined ? PC.sinkBurrow : 0.14;
       const bs = f.bodyScale;
       const result = {
         hit: false, groundY: -Infinity, groundZone: null,
@@ -320,27 +455,51 @@
           if (n.lengthSq() < 1e-9) n.set(0, 1, 0);
           n.normalize();
 
-          // ---- МЯГКОЕ ПОГРУЖЕНИЕ ----
-          // Игрок не выталкивается жёстко: он ТОНЕТ в жире пропорционально
-          // мягкости. Жёсткие зоны (локти, колени) выталкивают почти полностью.
-          //
-          // Порог поднят до 0.92: к другу можно подойти вплотную и буквально
-          // зарыться в него. Раньше жир «съедал» максимум 87% проникновения,
-          // и оставшаяся невидимая стенка не давала прижаться к телу.
+          /* ---- ДВУХСЛОЙНОЕ ТЕЛО: ЖИР СНАРУЖИ, МЫШЦЫ ВНУТРИ ----
+           *
+           * Две прошлые крайности обе были неверны:
+           *   • доля выталкивания (1 − softness × growth) давала «воздушную
+           *     стенку»: на малых стадиях игрока отбрасывало, не дав коснуться;
+           *   • полная проходимость пускала игрока ВНУТРЬ туши, где он
+           *     застревал между конечностями.
+           *
+           * Правильная модель — предел погружения в МЕТРАХ:
+           *   1. Внешний слой (жир) мягко пропускает руки, колени и грудь
+           *      на maxSink метров: плоть мнётся, игрок вязнет.
+           *   2. Внутренний слой (мышцы/скелет) — жёсткий. Глубже него
+           *      не пройти никогда, поэтому провалиться внутрь невозможно.
+           *
+           * Так игрок утыкается носом в живот и утопает в нём, но всегда
+           * остаётся снаружи тела. */
+          const minRad = Math.min(ex, ey, ez);
+          // Фактическая глубина проникновения в метрах мира
+          const penMeters = penetration * minRad * bs;
+
+          // Насколько глубоко пускает именно эта зона.
+          // Мягкий налитой живот — до ~55 см, костлявый локоть — пара см.
           const soft = c.softness * c.node.growth;
-          let sinkAllow = 0.30 + soft * 0.62;
-          // Пока лезем по телу — плоть расступается ещё охотнее: руки и
-          // колени должны утопать, а не скользить по невидимой скорлупе.
-          if (f.playerBurrowing) sinkAllow = Math.min(0.985, sinkAllow + 0.22);
-          const effective = penetration * (1 - sinkAllow);
+          const zoneSink = C_SINK_BASE + soft * C_SINK_SOFT;
+          // Пока лезем/ползём по телу, плоть расступается охотнее
+          const burrowBonus = f.playerBurrowing ? C_SINK_BURROW : 0;
+          // Предел не может превышать габарит самой зоны, иначе «мягкость»
+          // формально разрешила бы пройти её насквозь.
+          const maxSink = Math.min((zoneSink + burrowBonus) * bs, minRad * bs * 0.92);
+
+          // Режим призрака: плоть не сопротивляется вовсе, игрок выходит сам
+          const excessMeters = f.playerPhantom
+            ? 0 : Math.max(0, penMeters - maxSink);
+          const effective = minRad > 1e-6 ? excessMeters / (minRad * bs) : 0;
 
           // Величина выталкивания в локальных единицах.
           // Берём САМОЕ ГЛУБОКОЕ проникновение, а не сумму по всем зонам —
           // иначе перекрывающиеся коллайдеры катапультируют игрока.
-          const mag = effective * Math.min(ex, ey, ez) * 1.1 * s.w;
-          if (mag > maxPush) { maxPush = mag; push.copy(n).multiplyScalar(mag); }
+          if (effective > 1e-6) {
+            const mag = effective * minRad * 1.05 * s.w;
+            if (mag > maxPush) { maxPush = mag; push.copy(n).multiplyScalar(mag); }
+          }
 
-          const sinkAmount = penetration * sinkAllow;
+          // Насколько глубоко игрок утоплен (для эффектов и замедления)
+          const sinkAmount = maxSink > 1e-6 ? Math.min(1, penMeters / maxSink) : 0;
           if (sinkAmount > bestSink) {
             bestSink = sinkAmount;
             result.sink = sinkAmount;
@@ -379,12 +538,14 @@
         if (worldPush.y > 0) worldPos.y += worldPush.y;
         result.pushed = true;
 
-        // Гасим скорость вдоль нормали контакта
+        /* Гасим скорость только когда упёрлись во ВНУТРЕННИЙ твёрдый слой.
+         * Пока игрок идёт сквозь жир, выталкивания нет вовсе (push == 0),
+         * и этот код не выполняется — поэтому шаг внутрь не «съедается»
+         * и не возникает скольжения по невидимой скорлупе. */
         const nWorld = _tmpV2.copy(result.normal).applyQuaternion(f.root.quaternion);
         const vn = velocity.dot(nWorld);
         if (vn < 0) {
-          // Упругость мягких зон: слегка отпружинивает
-          const restitution = result.zone ? result.zone.bounce * 0.5 : 0.1;
+          const restitution = result.zone ? result.zone.bounce * 0.35 : 0.1;
           velocity.addScaledVector(nWorld, -vn * (1 + restitution));
         }
       }
@@ -400,6 +561,8 @@
      * трутся, складка опирается на бедро. Даёт эффект «плоть занимает объём».
      */
     selfCollision(dt) {
+      // Флаг нужен тестам: позволяет замерить чистое распространение волны
+      if (this.selfCollisionEnabled === false) return;
       const strength = 0.5;
       for (const [a, b, restDist] of this.selfPairs) {
         // Быстрая сферическая проверка

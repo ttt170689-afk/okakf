@@ -58,6 +58,15 @@
       this.bodyGroundZone = null;
       this.frozen = false;     // на время меню/мини-игр
 
+      /* --- АНТИ-БАГ ЗАСТРЕВАНИЯ ---
+       * stuckTimer   — сколько секунд игрок топчется, будучи внутри тела;
+       * phantom      — режим призрака: плоть перестаёт выталкивать вовсе;
+       * lastFreePos  — последняя точка СНАРУЖИ тела, куда безопасно вернуть. */
+      this.stuckTimer = 0;
+      this.phantom = 0;
+      this.lastFreePos = new THREE.Vector3();
+      this._escapeCooldown = 0;
+
       // АНИМИРОВАННЫЕ РУКИ: 15 суставов на кисть, IK, позы
       this.handsSystem = new FF.HandsSystem(camera, this);
       this.hands[0].anim = this.handsSystem.left;
@@ -187,6 +196,7 @@
       this._updateHands(dt);
       this._updateCamera(dt);
       this._updateModes(dt);
+      this._updateStuckGuard(dt);
     }
 
     /* -------------------- Ходьба -------------------- */
@@ -203,6 +213,12 @@
       this.crouch = !!this.keys.ControlLeft;
       /* Ползание (C): ниже приседа, пускает под живот друга и под мебель.
        * Под животом включается принудительно — там иначе не пролезть. */
+      /* X — двойного назначения: внутри тела это экстренный выход,
+       * в остальных случаях обычное ползание на четвереньках. */
+      if (this.keys.KeyX && this._isInsideBody() && this._escapeCooldown <= 0) {
+        this.escapeFromBody(false);
+        this.keys.KeyX = false;
+      }
       this.crawling = !!this.keys.KeyX || (this.mode === 'underbelly' && this.crouch);
       const running = this.keys.ShiftLeft && !this.crouch && this.stamina > 1;
       let speed = this.crawling ? C.walkSpeed * 0.28
@@ -226,6 +242,13 @@
         const fr = this.onGround ? 12 : 1.2;
         this.vel.x = U.damp(this.vel.x, 0, fr, dt);
         this.vel.z = U.damp(this.vel.z, 0, fr, dt);
+      }
+
+      /* Под животом Space — не прыжок, а «вылезти»: иначе игрок бьётся
+       * головой в тушу и не может выбраться самостоятельно. */
+      if (this.keys.Space && this.mode === 'underbelly' && this._escapeCooldown <= 0) {
+        this.escapeFromBody(false);
+        this.keys.Space = false;
       }
 
       // Прыжок
@@ -476,6 +499,129 @@
       // Опора на любой зоне тела (не только на животе!)
       this.bodyGroundY = res.groundY > -Infinity ? res.groundY : null;
       this.bodyGroundZone = res.groundZone;
+    }
+
+    /* -------------------- Анти-застревание -------------------- */
+    /**
+     * Страховка от того, что игрок увязнет внутри туши.
+     *
+     * Три ступени, включаются по нарастающей:
+     *   1. Через stuckSeconds топтания внутри тела — режим «фантом»:
+     *      плоть перестаёт выталкивать совсем, можно спокойно выйти.
+     *   2. Через stuckFreeSeconds — авто-выталкивание к ближайшей
+     *      свободной точке снаружи, живот при этом «выпускает» игрока.
+     *   3. Клавиша X в любой момент — экстренный выход наружу.
+     *
+     * Точка возврата — не случайная: запоминаем последнюю позицию,
+     * где игрок реально был снаружи тела.
+     */
+    _updateStuckGuard(dt) {
+      const C = FF.CONFIG.player;
+      const f = this.furry;
+      this._escapeCooldown = Math.max(0, this._escapeCooldown - dt);
+
+      const inside = this._isInsideBody();
+      const speed = Math.hypot(this.vel.x, this.vel.y, this.vel.z);
+
+      // Снаружи — запоминаем безопасное место и всё сбрасываем
+      if (!inside) {
+        if (this.onGround) this.lastFreePos.copy(this.pos);
+        this.stuckTimer = 0;
+        this.phantom = U.damp(this.phantom, 0, 4, dt);
+        f.playerPhantom = this.phantom > 0.5;
+        return;
+      }
+
+      // Внутри и почти не двигается — считаем застревание
+      if (speed < 0.9) this.stuckTimer += dt;
+      else this.stuckTimer = Math.max(0, this.stuckTimer - dt * 0.6);
+
+      // Ступень 1: фантом
+      const t1 = C.stuckSeconds !== undefined ? C.stuckSeconds : 2.0;
+      if (this.stuckTimer > t1) {
+        if (this.phantom < 0.5) {
+          FF.Game && FF.Game.notify('👻 Режим призрака: плоть пропускает тебя', 'info');
+        }
+        this.phantom = U.damp(this.phantom, 1, 6, dt);
+        f.playerPhantom = true;
+      }
+
+      // Ступень 2: вытолкнуть наружу
+      const t2 = C.stuckFreeSeconds !== undefined ? C.stuckFreeSeconds : 3.0;
+      if (this.stuckTimer > t2) this.escapeFromBody(true);
+    }
+
+    /**
+     * Игрок реально ЗАМУРОВАН в теле?
+     *
+     * Наивная проверка «попал в эллипсоид зоны» не годится: рядом с гигантом
+     * эллипсоид бедра спускается ниже земли, и стоящий у ног игрок формально
+     * оказывался «внутри». Поэтому считаем застреванием только глубокое
+     * погружение: центр игрока должен быть заметно ближе к ядру зоны,
+     * чем к её поверхности.
+     */
+    _isInsideBody() {
+      const f = this.furry;
+      if (!f.physics || !f.physics.colliders) return false;
+      const bs = f.bodyScale;
+      const local = _tmpPull.copy(this.pos);
+      f.root.worldToLocal(local);
+      local.divideScalar(bs);
+      const y = local.y + this.height / bs * 0.5;
+      for (const c of f.physics.colliders) {
+        if (c.node.growth < 0.05) continue;
+        const dx = (local.x - c.center.x) / c.radii.x;
+        const dy = (y - c.center.y) / c.radii.y;
+        const dz = (local.z - c.center.z) / c.radii.z;
+        const d2 = dx * dx + dy * dy + dz * dz;
+        // 0.42 по нормированному радиусу ≈ игрок в глубине зоны, а не у края
+        if (d2 < 0.42 * 0.42) return true;
+      }
+      return false;
+    }
+
+    /**
+     * Экстренный выход: выбрасывает игрока наружу тела.
+     * @param {boolean} auto true — сработала автоматика, false — нажали X
+     */
+    escapeFromBody(auto) {
+      if (this._escapeCooldown > 0) return false;
+      const f = this.furry;
+      this._escapeCooldown = 1.2;
+      this.stuckTimer = 0;
+
+      // Направление наружу — от центра тела к игроку по горизонтали
+      const out = _tmpPull.copy(this.pos).sub(f.root.position);
+      out.y = 0;
+      if (out.lengthSq() < 1e-4) out.set(0, 0, 1);
+      out.normalize();
+
+      // Радиус тела в этом направлении + запас
+      const reach = 3.4 * f.bodyScale + 1.2;
+      const target = out.multiplyScalar(reach).add(f.root.position);
+      let gy = this.world.heightAt(target.x, target.z);
+      if (this.world.platformAt) {
+        const pl = this.world.platformAt(target.x, target.z, gy + 3);
+        if (pl !== null && pl > gy) gy = pl;
+      }
+
+      this.pos.set(target.x, gy + 0.2, target.z);
+      this.vel.set(0, 0, 0);
+      this.hands.forEach((h) => (h.grip = null));
+      this.climbing = false;
+      this.mode = 'walk';
+      this.phantom = 0;
+      f.playerPhantom = false;
+
+      // Живот «выпускает» игрока: волна и вмятина в месте выхода
+      const nd = f.zoneAt(this.pos) || f.nodeById.mid_belly;
+      if (nd) nd.impulse(out.clone(), 14);
+      f.wave(this.pos.clone(), 1.4);
+      this.audio && this.audio.squish();
+
+      FF.Game && FF.Game.notify(
+        auto ? '💨 Тебя выпустило наружу' : '💨 Выбрался из тела друга!', 'info');
+      return true;
     }
 
     /* -------------------- Режимы -------------------- */

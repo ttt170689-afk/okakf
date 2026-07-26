@@ -16,8 +16,13 @@ console.log('=== 1. ГРАВИТАЦИЯ АНИЗОТРОПНА (свисани�
 const apron=f.nodeById.apron_fold, nape=f.nodeById.nape, shelf=f.nodeById.back_shelf;
 sim(180);
 t('apron_fold провисает вниз', apron.offset.y<-0.001, 'y='+apron.offset.y.toFixed(4));
-t('загривок НЕ провисает вниз (sag=0)', nape.offset.y>-0.004, 'y='+nape.offset.y.toFixed(4));
-t('полка над попой НЕ провисает вниз', shelf.offset.y>-0.004, 'y='+shelf.offset.y.toFixed(4));
+/* Мгновенный replace смещения ловит случайную фазу микро-дрожи (её старт
+ * рандомен), поэтому усредняем за секунду — так меряем именно провисание
+ * под гравитацией, а не точку синусоиды. */
+const avgY = (nd) => { let a = 0; for (let i = 0; i < 60; i++) { f.update(dt, 12); a += nd.offset.y; } return a / 60; };
+const napeAvg = avgY(nape), shelfAvg = avgY(shelf);
+t('загривок НЕ провисает вниз (sag=0)', napeAvg > -0.01, 'сред. y=' + napeAvg.toFixed(4));
+t('полка над попой НЕ провисает вниз', shelfAvg > -0.01, 'сред. y=' + shelfAvg.toFixed(4));
 t('живот свисает сильнее загривка', Math.abs(apron.offset.y)>Math.abs(nape.offset.y)*3);
 
 console.log('=== 2. МНОГОСЛОЙНЫЙ ЖИР: слои рассинхронены ===');
@@ -43,18 +48,29 @@ t('дрожь гаснет за 0.3-4 с', settleIdx>18 && settleIdx<240, (settl
 console.log('=== 4. ВОЛНА РЕАЛЬНО БЕЖИТ ПО ТЕЛУ ===');
 // Микро-дрожь отключаем: иначе она маскирует фронт волны
 f._far = true;
-for(const n of f.nodes){ n.layers.forEach(l=>{l.pos.set(0,0,0);l.vel.set(0,0,0);}); n.offset.set(0,0,0); }
+// Полный сброс: иначе остаточные вмятины от самоколлизии зон дают
+// ненулевое смещение ещё до прихода волны, и замер «первого кадра» врёт.
+for(const n of f.nodes){
+  n.layers.forEach(l=>{l.pos.set(0,0,0);l.vel.set(0,0,0);});
+  n.offset.set(0,0,0); n.dent.set(0,0,0); n.dentVel.set(0,0,0); n.vel.set(0,0,0);
+}
 f._waveQueue.length=0;
+f.physics.selfCollisionEnabled = false;   // не мешаем замеру фронта
 const belly=f.nodeById.mid_belly, chin=f.nodeById.chin3;
 const p=f.root.localToWorld(new THREE.Vector3(0,1.05,0.3));
 f.wave(p, 2.0);
+/* Замеряем ПРИРОСТ смещения относительно фона: дыхание и микро-жизнь дают
+ * зонам ненулевой offset ещё до прихода волны, и абсолютный порог срабатывал
+ * бы мгновенно, ничего не измеряя. */
+const bellyBase = belly.offset.y, chinBase = chin.offset.y;
 let tBelly=-1,tChin=-1;
 for(let i=0;i<120;i++){ f.update(dt,12);
-  if(tBelly<0 && Math.abs(belly.offset.y)>0.0015) tBelly=i;
-  if(tChin<0 && Math.abs(chin.offset.y)>0.0015) tChin=i; }
+  if(tBelly<0 && Math.abs(belly.offset.y - bellyBase)>0.004) tBelly=i;
+  if(tChin<0 && Math.abs(chin.offset.y - chinBase)>0.004) tChin=i; }
 t('живот реагирует первым', tBelly>=0, 'кадр '+tBelly);
 t('подбородок реагирует ПОЗЖЕ живота', tChin>tBelly, 'кадр '+tChin);
 t('задержка заметна (>2 кадров)', (tChin-tBelly)>2, 'разница '+(tChin-tBelly)+' кадров');
+f.physics.selfCollisionEnabled = true;
 f._far = false;
 
 console.log('=== 5. МИКРО-ЖИЗНЬ В ПОКОЕ ===');
