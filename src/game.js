@@ -137,7 +137,7 @@
       window.addEventListener('keydown', (e) => {
         this.audio.init();
         if (this.ui.minigame) { this.ui.mgKey(e.code, true); e.preventDefault(); return; }
-        if (e.code === 'F5' || e.code === 'F9' || e.code === 'Tab' || e.code === 'F1' || e.code === 'F2') e.preventDefault();
+        if (['F1','F2','F4','F5','F9','Tab'].includes(e.code)) e.preventDefault();
         this.player.onKey(e.code, true);
         this._handleHotkey(e.code, e);
       });
@@ -163,11 +163,12 @@
         case 'KeyK': ui.toggle('quests'); break;
         case 'KeyL': ui.toggle('stats'); break;
         case 'F1': ui.toggle('help'); break;
+        case 'F4': ui.toggle('money'); break;
         case 'KeyE': this._interact(); break;
         case 'KeyF': this._feedSelected(); break;
         case 'KeyQ': this._cycleItem(); break;
         case 'KeyG': this._throwFood(); break;
-        case 'KeyY': this._callFurry(); break;
+        case 'KeyY': this._callFurry(); break;   // зов / отмена следования
         case 'ArrowLeft': if (this.photo.active) this.photo.cycleFilter(-1); break;
         case 'ArrowRight': if (this.photo.active) this.photo.cycleFilter(1); break;
         case 'KeyJ': this.ui.toggle('notebook'); break;
@@ -387,19 +388,54 @@
       this.notify(`🫳 Бросил ${f.icon} ${f.name}`, 'info');
     }
 
+    /**
+     * ЗОВ ДРУГА (клавиша Y).
+     * Переключает режим следования: друг идёт за игроком, пока не отменишь.
+     * Диалогов нет — обратная связь через свист, эмоции и HUD.
+     */
     _callFurry() {
       const f = this.furry;
-      if (!f.mobile) {
-        this.notify('🛑 Друг не может двигаться — нужен эликсир!', 'warn');
-        f.say('Я не могу... я слишком большой... прости~');
+
+      // Уже идёт — отменяем
+      if (this.furryFollow) {
+        this.furryFollow = false;
+        this.furryWalkTarget = null;
+        this.notify('🐾 Друг остановился и ждёт здесь.', 'info');
+        f.setEmotion('content', 3);
+        this.audio.ui('click');
         return;
       }
-      const target = this.player.pos.clone();
-      const dir = target.clone().sub(f.root.position); dir.y = 0;
-      if (dir.length() < 3) { this.notify('🐾 Друг уже рядом!', 'info'); return; }
-      this.furryWalkTarget = target;
-      f.say(U.pick(['Иду-иду! Мур~', 'Подожди меня...', 'Уже бегу! Ну... иду.']));
-      this.notify('🐾 Друг идёт к тебе.', 'info');
+
+      // Свист — слышно даже издалека
+      this._whistle();
+
+      if (!f.mobile) {
+        this.notify('🛑 Друг не может двигаться — нужен эликсир Артёма!', 'warn');
+        f.setEmotion('sad', 4);
+        this.audio.voice('sad', f.opts.species);
+        return;
+      }
+
+      const dist = f.root.position.distanceTo(this.player.pos);
+      if (dist < 3.5) {
+        this.notify('🐾 Друг уже рядом.', 'info');
+        f.setEmotion('happy', 2.5);
+        this.audio.voice('happy', f.opts.species);
+        return;
+      }
+
+      this.furryFollow = true;
+      f.setEmotion('happy', 4);
+      this.audio.voice('happy', f.opts.species);
+      const secs = Math.round(dist / Math.max(0.5, 2.6 - f.stage * 0.25));
+      this.notify(`🐾 Друг идёт к тебе (${Math.round(dist)} м, ~${secs} с). Y — отменить.`, 'info');
+    }
+
+    /** Свист: два коротких тона — сигнал зова */
+    _whistle() {
+      this.audio.tone({ freq: 900, type: 'sine', dur: 0.13, gain: 0.16, slideTo: 1350 });
+      setTimeout(() => this.audio.tone({
+        freq: 1350, type: 'sine', dur: 0.20, gain: 0.16, slideTo: 950 }), 150);
     }
 
     /* ==================== ЛОКАЦИОННЫЕ ДЕЙСТВИЯ ==================== */
@@ -680,7 +716,10 @@
           eggs: () => this.inv.add('egg', 2 + Math.round(q * 5)),
           honey: () => this.inv.add('honey', 1 + Math.round(q * 3)),
           wool: () => { this.inv.addCoins(10 + Math.round(q * 25)); },
-          dough: () => this.inv.add('flour', 2 + Math.round(q * 4)),
+          dough: () => {
+            this.inv.add('flour', 2 + Math.round(q * 4));
+            this.inv.addCoins(FF.CONFIG.economy.bakeryShiftPay + Math.round(q * 20));
+          },
           fishing: () => { if (source && source.item) this.inv.add(source.item, 1); else this.inv.addCoins(10 + Math.round(q * 20)); },
           cafe: () => this.inv.addCoins(FF.CONFIG.economy.cafeShiftPay + Math.round(q * 20)),
           chocobath: () => { this.furry.wet = 1; this.furry.mood = 1; this.furry.relation += 3; this.inv.add('choco_heart', 1); },
@@ -1141,23 +1180,88 @@
     }
 
     /** Фурри идёт к игроку, если позвали */
+    /**
+     * Друг идёт к игроку: цель обновляется каждый кадр, есть обход
+     * препятствий, ускорение на дистанции и остановка рядом.
+     */
     _updateFurryWalk(dt) {
       const f = this.furry;
-      if (!this.furryWalkTarget || !f.mobile) return;
-      const d = this.furryWalkTarget.clone().sub(f.root.position);
+      if (!this.furryFollow) return;
+
+      // Потерял подвижность по пути (кончился эликсир)
+      if (!f.mobile) {
+        this.furryFollow = false;
+        this.notify('🛑 Друг больше не может идти — нужен эликсир.', 'warn');
+        f.setEmotion('sad', 4);
+        return;
+      }
+
+      // Цель — ТЕКУЩАЯ позиция игрока, а не та, где он был при зове
+      const d = this.player.pos.clone().sub(f.root.position);
       d.y = 0;
-      if (d.length() < 2.2) { this.furryWalkTarget = null; f.say('Вот я! Мур~'); return; }
-      const speed = Math.max(0.5, 2.6 - f.stage * 0.25);
+      const dist = d.length();
+
+      // Пришёл
+      const stopAt = 2.2 + f.bodyScale * 0.8;
+      if (dist < stopAt) {
+        this.furryFollow = false;
+        this.furryWalkTarget = null;
+        this.notify('🐾 Друг догнал тебя!', 'feed');
+        f.setEmotion('happy', 3);
+        this.audio.voice('happy', f.opts.species);
+        f.relation += 0.5;
+        this.achieve('good_boy');
+        return;
+      }
+
       d.normalize();
+
+      // Обход препятствий: пробуем сдвинуть направление, если впереди стена
+      const probe = f.root.position.clone().addScaledVector(d, 2.2 + f.bodyScale);
+      let blocked = false;
+      for (const c of this.world.colliders) {
+        if (c.type === 'box') {
+          if (Math.abs(probe.x - c.x) < c.w / 2 + f.bodyScale &&
+              Math.abs(probe.z - c.z) < c.d / 2 + f.bodyScale) { blocked = true; break; }
+        } else if (c.type === 'cyl') {
+          if (Math.hypot(probe.x - c.x, probe.z - c.z) < c.r + f.bodyScale) { blocked = true; break; }
+        }
+      }
+      if (blocked) {
+        // Скользим вдоль препятствия
+        const side = (this._dodgeDir || (this._dodgeDir = Math.random() < 0.5 ? 1 : -1));
+        d.set(-d.z * side, 0, d.x * side).normalize();
+      } else this._dodgeDir = null;
+
+      // Скорость: крупный идёт медленнее, но издалека спешит
+      const base = Math.max(0.55, 2.6 - f.stage * 0.24);
+      const hurry = dist > 18 ? 1.7 : dist > 8 ? 1.3 : 1;
+      const speed = base * hurry;
+
       f.root.position.addScaledVector(d, speed * dt);
       f.root.position.y = this.world.heightAt(f.root.position.x, f.root.position.z);
-      f.root.rotation.y = Math.atan2(d.x, d.z);
-      // Колыхание при ходьбе
-      const step = Math.sin(performance.now() * 0.004 * speed);
-      f.nodeById.mid_belly.impulse(new THREE.Vector3(0, -1, 0.2), Math.abs(step) * dt * 22);
-      f.nodeById.lower_left_glute.impulse(new THREE.Vector3(0, step, 0), dt * 14);
-      f.nodeById.lower_right_glute.impulse(new THREE.Vector3(0, -step, 0), dt * 14);
-      if (Math.random() < dt * 2.5) this.audio.step(false);
+      // Плавный разворот в сторону движения
+      const wantYaw = Math.atan2(d.x, d.z);
+      let dy = wantYaw - f.root.rotation.y;
+      while (dy > Math.PI) dy -= Math.PI * 2;
+      while (dy < -Math.PI) dy += Math.PI * 2;
+      f.root.rotation.y += dy * Math.min(1, dt * 5);
+
+      // Походка: колыхание тем сильнее, чем он больше
+      const gait = 0.004 * speed * (1 + f.stage * 0.12);
+      const step = Math.sin(performance.now() * gait);
+      const heavy = 1 + f.stage * 0.35;
+      f.nodeById.mid_belly.impulse(new THREE.Vector3(0, -1, 0.2), Math.abs(step) * dt * 22 * heavy);
+      f.nodeById.lower_belly.impulse(new THREE.Vector3(0, -1, 0.1), Math.abs(step) * dt * 16 * heavy);
+      f.nodeById.lower_left_glute.impulse(new THREE.Vector3(0, step, 0), dt * 14 * heavy);
+      f.nodeById.lower_right_glute.impulse(new THREE.Vector3(0, -step, 0), dt * 14 * heavy);
+      f.nodeById.left_moob.impulse(new THREE.Vector3(0, step * 0.6, 0), dt * 9 * heavy);
+      f.nodeById.right_moob.impulse(new THREE.Vector3(0, -step * 0.6, 0), dt * 9 * heavy);
+
+      // Шаги и пыхтение — чем толще, тем тяжелее
+      if (Math.random() < dt * 2.2) this.audio.step(false);
+      if (f.stage >= 5 && Math.random() < dt * 0.7) this.audio.voice('breath', f.opts.species, 0.85);
+      if (f.stage >= 4 && Math.random() < dt * 1.1) this.audio.squish();
     }
 
     _updateAmbientAudio(dt) {

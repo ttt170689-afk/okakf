@@ -186,6 +186,10 @@
     background:linear-gradient(135deg,rgba(255,158,196,.18),rgba(138,198,255,.1));
     border:1px solid rgba(255,158,196,.4);animation:pop .35s ease}
 
+  .row.follow{color:#7cd66b}
+  .row.follow .dots::after{content:'';animation:dots 1.2s steps(4) infinite}
+  @keyframes dots{0%{content:''}25%{content:'.'}50%{content:'..'}75%{content:'...'}}
+
   /* ---------------- SUGAR CAB HUD ---------------- */
   .cab-hud{position:absolute;left:50%;top:14px;transform:translateX(-50%);width:min(330px,90vw)}
   .cab-card{background:rgba(28,20,16,.94);border:1px solid rgba(255,201,60,.45);border-radius:14px;

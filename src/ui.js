@@ -80,6 +80,8 @@
           <div class="bar"><i style="width:${prog * 100}%;background:linear-gradient(90deg,#ffb46b,#ff6f9c)"></i>
             <u>${U.fmt(f.calories)} / ${nextTh ? U.fmt(nextTh) : '∞'} кал</u></div>
           <div class="row small">Масса: <b>${U.fmt(f.mass)} кг</b> ${f.mobile ? '🚶 подвижен' : '🛑 не может двигаться'}</div>
+          ${g.furryFollow ? `<div class="row small follow">🐾 Идёт к тебе — ${
+            Math.round(f.root.position.distanceTo(p.pos))} м <span class="dots"></span></div>` : ''}
           <div class="bar mini"><i style="width:${(1 - f.hunger) * 100}%;background:linear-gradient(90deg,#7cd66b,#d6d16b)"></i><u>Сытость</u></div>
           <div class="bar mini"><i style="width:${f.mood * 100}%;background:linear-gradient(90deg,#6bb7ff,#c58bff)"></i><u>Настроение</u></div>
           <div class="bar mini"><i style="width:${U.clamp(f.relation, 0, 100)}%;background:linear-gradient(90deg,#ff7ba6,#ff4d79)"></i><u>Связь: ${g.relationName()}</u></div>
@@ -466,6 +468,40 @@
           break;
         }
 
+        /* ---------- КАК ЗАРАБОТАТЬ ---------- */
+        case 'money': {
+          html = head('🪙 Как заработать монеты', `Сейчас у тебя: ${Math.floor(g.inv.coins)} 🪙`);
+          const rows = [
+            ['💼', 'Смена в кафе', '20–40 🪙', 'Sweet Paw, Chocolate Dreams, Cream Palace — подойди и нажми E у вывески «Поработать смену»'],
+            ['🥖', 'Смена в пекарне', '25–45 🪙 + мука', 'Golden Bakery: мини-игра замешивания теста'],
+            ['📜', 'Задания NPC', '10–1000 🪙', `Выполнено ${g.quests.done.size} из ${FF.QUESTS.length}. Ежедневные обновляются каждый день`],
+            ['🎸', 'Игра с музыкантом', '8–33 🪙', 'Площадь: ритм-игра вместе с уличным музыкантом'],
+            ['🎣', 'Рыбалка', '10–30 🪙', 'Пруд в парке. В горах ловится ледяная рыба (дороже)'],
+            ['🐑', 'Стрижка овец', '10–35 🪙', 'Ферма: мини-игра стрижки'],
+            ['💃', 'Танцы в клубе', '10–40 🪙', 'Ночной клуб, работает с 21:00 до 06:00'],
+            ['🧩', 'Головоломка маяка', '25–105 🪙', 'Старый маяк в лесу — разовая, но щедрая'],
+            ['💰', 'Продажа еды', '55% цены', 'В любом кафе вкладка «Продать». Готовь дешёвое — продавай дорогое'],
+            ['🌅', 'Ежедневный вход', `${FF.CONFIG.economy.dailyLogin} 🪙`, 'Начисляется автоматически каждое новое утро'],
+            ['📮', 'Почта', '5–25 🪙', 'Проверяй почтовый ящик у дома и почту в городе'],
+            ['🏆', 'Достижения', '15 🪙', `За каждое. Получено ${g.achievements.size} из ${FF.ACHIEVEMENTS.length}`],
+            ['🐦', 'Покормить голубей', '1 🪙', 'Площадь и парк. Мелочь, но приятно'],
+            ['🏦', 'Кредит в банке', '200 🪙', 'Вернуть придётся 260 — берите с умом'],
+          ];
+          html += '<div class="p-body"><div class="list">';
+          for (const [ic, name, pay, desc] of rows) {
+            html += `<div class="recipe"><div class="ic">${ic}</div>
+              <div class="body"><b>${name}</b> <span class="tag">${pay}</span>
+              <div class="sm">${desc}</div></div></div>`;
+          }
+          html += `</div>
+            <p class="hint"><b>Самое выгодное на старте:</b> смены в кафе и пекарне —
+            их можно повторять, они не заканчиваются. Дальше подключай задания NPC:
+            всего в них ${FF.QUESTS.reduce((a, q) => a + ((q.reward && q.reward.coins) || 0), 0)} монет.
+            Крафт тоже приносит доход: приготовил дешёвое блюдо — продал дороже ингредиентов.</p>
+            </div>`;
+          break;
+        }
+
         /* ---------- ТАБЛИЦА ПОСАДКИ В ТАКСИ ---------- */
         case 'boarding': {
           const b = g.boarding, cur = g.furry.stage;
@@ -655,12 +691,13 @@
             <div><kbd>F</kbd> покормить друга выбранной едой</div>
             <div><kbd>Q</kbd> сменить предмет в руках</div>
             <div><kbd>I</kbd> инвентарь · <kbd>Tab</kbd> карта · <kbd>K</kbd> квесты</div>
+            <div><kbd>F4</kbd> 🪙 как заработать монеты</div>
             <div><kbd>L</kbd> статистика друга (60 зон)</div>
             <div><kbd>C</kbd> кухня-крафт (дома) · <kbd>B</kbd> варка (в лаборатории)</div>
             <div><kbd>T</kbd> вызвать такси · <kbd>H</kbd> домой · <kbd>U</kbd> к Артёму</div>
             <div><kbd>P</kbd> фото-режим · <kbd>F2</kbd> скриншот</div>
             <div><kbd>F5</kbd> сохранить · <kbd>F9</kbd> загрузить · <kbd>M</kbd>/<kbd>Esc</kbd> меню</div>
-            <div><kbd>G</kbd> БРОСИТЬ еду (физика!) · <kbd>Y</kbd> позвать друга</div>
+            <div><kbd>G</kbd> БРОСИТЬ еду (физика!) · <kbd>Y</kbd> позвать друга / отменить</div>
             <div><kbd>N</kbd> игры на животе · <kbd>O</kbd> гардероб · <kbd>J</kbd> дневник</div>
             <div><kbd>F3</kbd> отладка коллайдеров: увидеть все 60 эллипсоидов</div>
             <div><kbd>B</kbd> (вне лаборатории) таблица посадки в такси по размерам</div>

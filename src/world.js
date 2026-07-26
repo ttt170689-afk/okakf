@@ -314,6 +314,10 @@
       stop.position.set(20, 0, 14);
       g.add(stop);
       this.taxiStop = new THREE.Vector3(20, 0, 14);
+      // Подработка с уличным музыкантом
+      this.interactables.push({ id: 'busk', pos: new THREE.Vector3(-6, 1.2, 12), radius: 4,
+        label: '🎸 Сыграть с музыкантом (~8-33 🪙)', action: 'minigame', game: 'busker' });
+
       this.interactables.push({ id: 'taxi_call', pos: this.taxiStop.clone().add(new THREE.Vector3(0, 1, 3)),
         radius: 5, label: 'Вызвать такси (T)', action: 'taxi' });
 
@@ -478,11 +482,11 @@
     _buildCafes() {
       const defs = [
         { id: 'sweetpaw', color: 0xffb6d5, w: 14, d: 12, h: 6, sign: '☕ Sweet Paw',
-          menu: ['donut', 'croissant', 'coffee_cake', 'cookie'], npc: 'milli' },
+          menu: ['donut', 'croissant', 'coffee_cake', 'cookie'], npc: 'milli', work: 'cafe' },
         { id: 'chocodreams', color: 0x6b4423, w: 15, d: 13, h: 6.5, sign: '🍫 Chocolate Dreams',
-          menu: ['choco_donut', 'choco_bar', 'choco_cake', 'hot_choco'], npc: 'bruno', chocoBath: true },
+          menu: ['choco_donut', 'choco_bar', 'choco_cake', 'hot_choco'], npc: 'bruno', chocoBath: true, work: 'cafe' },
         { id: 'creampalace', color: 0xfff4d8, w: 17, d: 15, h: 8, sign: '🎂 Cream Palace',
-          menu: ['cream_pastry', 'medium_cake', 'big_cake', 'tiramisu', 'eclair', 'cheesecake'], npc: 'victoria' },
+          menu: ['cream_pastry', 'medium_cake', 'big_cake', 'tiramisu', 'eclair', 'cheesecake'], npc: 'victoria', work: 'cafe' },
         { id: 'bakery', color: 0xe8c07a, w: 13, d: 11, h: 5.5, sign: '🥖 Golden Bakery',
           menu: ['bread', 'pirozhok', 'muffin', 'croissant', 'pretzel'], npc: 'barry', work: 'dough' },
         { id: 'pumpcafe', color: 0x2a3a4a, w: 18, d: 16, h: 8, sign: '⚙️ The Pump Cafe',
@@ -542,7 +546,8 @@
         this.interactables.push({ id: d.id + '_menu', pos: new THREE.Vector3(L.x, 1.6, L.z + d.w / 2 + 1.5),
           radius: 4.5, label: `${d.sign}: меню`, action: 'shop', shop: d.menu, loc: d.id });
         if (d.work) this.interactables.push({ id: d.id + '_work', pos: new THREE.Vector3(L.x + 3, 1.6, L.z + d.w / 2 + 1.5),
-          radius: 3.5, label: 'Поработать смену', action: 'minigame', game: d.work });
+          radius: 3.5, label: `💼 Поработать смену (${d.work === 'cafe' ? '~20-40' : '~25-45'} 🪙)`,
+          action: 'minigame', game: d.work });
         if (d.chocoBath) {
           const bath = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 2.8, 1.4, 20),
             new THREE.MeshStandardMaterial({ color: 0x5c3317, roughness: 0.15, metalness: 0.3 }));
