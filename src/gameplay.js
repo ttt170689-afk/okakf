@@ -364,7 +364,7 @@
       this.progress = 0;
       this.game.player.mode = 'ride';
       // Физика салона: друг занимает объём и вытесняет игрока
-      if (this.game.cabin) this.game.cabin.enter(def);
+      if (this.game.cabin) this.game.cabin.enter(this.taxiDef);
       this.game.player.frozen = false;
       this.game.notify(`🚕 Едем: ${to.name}. Наслаждайся видом!`, 'info');
       this.game.furry.setEmotion('content', 8);
@@ -397,7 +397,10 @@
         if (Math.random() < dt * 6) this.game.audio.engine(load);
       } else if (this.state === 'driving') {
         const spdMult = this.speedMult || 1;
-        this.progress += dt / (this.route.from.distanceTo(this.route.to) / (def.speed * spdMult / 3.6) * 0.35);
+        // Минимум 18 секунд поездки — чтобы прочувствовать тесноту салона
+        const travelSec = Math.max(18,
+          this.route.from.distanceTo(this.route.to) / (def.speed * spdMult / 3.6) * 0.9);
+        this.progress += dt / travelSec;
         const t = U.clamp(this.progress, 0, 1);
         const p = this.route.from.clone().lerp(this.route.to, t);
         // Небольшая дуга маршрута
@@ -413,7 +416,10 @@
           this.game.player.pos.copy(camPos);
           this.game.player.pos.y -= FF.CONFIG.player.eyeHeight;
         }
-        furry.root.position.copy(p).add(new THREE.Vector3(0, def.h * 0.85 + this.suspension, -def.len * 0.28));
+        // Позицией друга в салоне управляет CabinSystem (он сидит рядом с игроком).
+        if (!this.game.cabin || !this.game.cabin.active) {
+          furry.root.position.copy(p).add(new THREE.Vector3(0, def.h * 0.85 + this.suspension, -def.len * 0.28));
+        }
         // Раскачивание
         this.mesh.rotation.z = Math.sin(performance.now() * 0.002) * 0.02 * load;
         furry.wave(furry.root.position.clone().add(new THREE.Vector3(0, 1, 0)), dt * 1.4);

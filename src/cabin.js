@@ -215,7 +215,9 @@
       this.safeCab = false;
       this.active = false;
       this.trapped = false;
-      if (this.debugBox) { this.game.scene.remove(this.debugBox); this.debugBox = null; }
+      this._clearInterior();
+      this.game.camera.fov = FF.CONFIG.render.fov;
+      this.game.camera.updateProjectionMatrix();
       const g = this.game;
       if (this.maxSqueeze > 0.75) {
         g.notify(`😮‍💨 Выбрался! Максимальное сжатие было ${Math.round(this.maxSqueeze * 100)}%`, 'info');
@@ -224,14 +226,65 @@
       if (this.timeSqueezed > 20) g.achieve('cabin_endurance');
     }
 
+    /** Строим ВИДИМЫЙ салон: пол, потолок, стены, окна, сиденье. */
     _buildDebug() {
-      if (this.debugBox) this.game.scene.remove(this.debugBox);
+      this._clearInterior();
       const c = this.cabin;
-      const geo = new THREE.BoxGeometry(c.w, c.h, c.len);
-      const edges = new THREE.EdgesGeometry(geo);
-      this.debugBox = new THREE.LineSegments(edges,
-        new THREE.LineBasicMaterial({ color: 0x4ad8ff, transparent: true, opacity: 0.0 }));
-      this.game.scene.add(this.debugBox);
+      const g = new THREE.Group();
+      const wallMat = new THREE.MeshStandardMaterial({ color: 0x3a2e34, roughness: 0.92, side: THREE.DoubleSide });
+      const roofMat = new THREE.MeshStandardMaterial({ color: 0x2a2028, roughness: 0.95, side: THREE.DoubleSide });
+      const floorMat = new THREE.MeshStandardMaterial({ color: 0x241c22, roughness: 0.88, side: THREE.DoubleSide });
+      const glassMat = new THREE.MeshPhysicalMaterial({ color: 0xbfe0ff, transparent: true, opacity: 0.16,
+        roughness: 0.04, transmission: 0.92, thickness: 0.08, side: THREE.DoubleSide });
+      const seatMat = new THREE.MeshStandardMaterial({ color: 0x6a4658, roughness: 1 });
+      const hw = c.w / 2, hl = c.len / 2;
+
+      const floor = new THREE.Mesh(new THREE.PlaneGeometry(c.w, c.len), floorMat);
+      floor.rotation.x = -Math.PI / 2;
+      g.add(floor);
+      const roof = new THREE.Mesh(new THREE.PlaneGeometry(c.w, c.len), roofMat);
+      roof.rotation.x = Math.PI / 2; roof.position.y = c.h;
+      g.add(roof);
+      for (const sx of [-1, 1]) {
+        const wall = new THREE.Mesh(new THREE.PlaneGeometry(c.len, c.h), wallMat);
+        wall.rotation.y = sx * Math.PI / 2;
+        wall.position.set(sx * hw, c.h / 2, 0);
+        g.add(wall);
+        const win = new THREE.Mesh(new THREE.PlaneGeometry(c.len * 0.7, c.h * 0.44), glassMat);
+        win.rotation.y = sx * Math.PI / 2;
+        win.position.set(sx * (hw - 0.012), c.h * 0.62, 0);
+        g.add(win);
+      }
+      const front = new THREE.Mesh(new THREE.PlaneGeometry(c.w, c.h), wallMat);
+      front.position.set(0, c.h / 2, -hl);
+      g.add(front);
+      const back = new THREE.Mesh(new THREE.PlaneGeometry(c.w, c.h * 0.5), glassMat);
+      back.position.set(0, c.h * 0.62, hl - 0.01);
+      g.add(back);
+      const seat = new THREE.Mesh(new THREE.BoxGeometry(c.w * 0.42, 0.14, 0.52), seatMat);
+      seat.position.set(c.w * 0.24, c.seatH, c.len * 0.22);
+      g.add(seat);
+      const seatBack = new THREE.Mesh(new THREE.BoxGeometry(c.w * 0.42, 0.52, 0.12), seatMat);
+      seatBack.position.set(c.w * 0.24, c.seatH + 0.32, c.len * 0.22 + 0.28);
+      g.add(seatBack);
+      const lamp = new THREE.PointLight(0xffd8a8, 0.85, c.len * 1.6, 2);
+      lamp.position.set(0, c.h - 0.12, 0);
+      g.add(lamp);
+      this.cabinLamp = lamp;
+
+      g.traverse((o) => { if (o.isMesh) { o.renderOrder = -1; o.frustumCulled = false; } });
+      this.game.scene.add(g);
+      this.interior = g;
+    }
+
+    _clearInterior() {
+      if (!this.interior) return;
+      this.game.scene.remove(this.interior);
+      this.interior.traverse((o) => {
+        if (o.geometry) o.geometry.dispose();
+        if (o.material) o.material.dispose && o.material.dispose();
+      });
+      this.interior = null;
     }
 
     /* --------------------------------------------------------
@@ -258,11 +311,21 @@
 
       // --- Положение друга в салоне ---
       // Он лежит/сидит в глубине, его центр смещается от перегрузок
+      // Чем крупнее — тем ближе его центр к тебе (места не остаётся)
+      const crowd = U.clamp(1 - this.freeVolume, 0, 1);
       const furryLocal = _v1.set(
-        -c.w * 0.16 + this.lateralG * 0.16 * (1 + f.stage * 0.1),
-        c.seatH + 0.30,
-        -c.len * 0.14 + this.longG * 0.12
+        -c.w * (0.22 - crowd * 0.20) + this.lateralG * 0.16 * (1 + f.stage * 0.1),
+        c.seatH + 0.12,
+        -c.len * (0.16 - crowd * 0.14) + this.longG * 0.12
       );
+
+      // Двигаем модель друга в салон — чтобы его было ВИДНО вплотную
+      const fWorld = _v3.copy(furryLocal);
+      fWorld.applyAxisAngle(new THREE.Vector3(0, 1, 0), taxi.mesh.rotation.y);
+      fWorld.add(taxi.mesh.position);
+      fWorld.y += (taxi.suspension || 0);
+      f.root.position.lerp(fWorld, 1 - Math.exp(-12 * dt));
+      f.root.rotation.y = U.damp(f.root.rotation.y, taxi.mesh.rotation.y + 0.55, 5, dt);
 
       // --- Вытеснение: считаем давление от каждой крупной зоны ---
       const bs = f.bodyScale;
@@ -367,10 +430,11 @@
       g.player.pos.copy(world);
       g.player.pos.y -= FF.CONFIG.player.eyeHeight;
 
-      if (this.debugBox) {
-        this.debugBox.position.copy(taxiPos);
-        this.debugBox.position.y += c.h / 2 + 0.4 + (taxi.suspension || 0);
-        this.debugBox.rotation.y = taxi.mesh.rotation.y;
+      if (this.interior) {
+        this.interior.position.copy(taxiPos);
+        this.interior.position.y += (taxi.suspension || 0);
+        this.interior.rotation.y = taxi.mesh.rotation.y;
+        if (this.cabinLamp) this.cabinLamp.intensity = 0.85 * (1 - this.squeeze * 0.55);
       }
     }
 

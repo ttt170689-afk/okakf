@@ -53,6 +53,7 @@
       this.objects = new FF.ObjectPhysics(this.scene, this.world, this.furry.physics);
       this.boarding = new FF.BoardingSystem(this);
       this.cabin = new FF.CabinSystem(this);
+      this.cab = new FF.SugarCabSystem(this);
       this.clothing = new FF.ClothingSystem(this);
       this.weatherSys = new FF.WeatherSystem(this);
       this.photo = new FF.PhotoSystem(this);
@@ -178,11 +179,14 @@
           this.notify(`🔬 Отладка коллайдеров: ${on ? 'ВКЛ — видно все 60 эллипсоидов' : 'выкл'}`, 'info');
           break;
         }
+        case 'Space':
+          if (this.cab.state === 'boarding') { this.cab.tapHelp(); }
+          break;
         case 'KeyN':
           if (this.player.mode === 'onbelly') this.startMinigame(U.pick(['jumper', 'dontfall']));
           else this.notify('🏔️ Эти игры работают только НА животе друга.', 'warn');
           break;
-        case 'KeyT': this.taxi.call(); break;
+        case 'KeyT': this.cab.call(); break;
         case 'KeyH': this._fastTravel('cottage'); break;
         case 'KeyU': this._fastTravel('lab'); break;
         case 'KeyC': if (this._near('craft')) ui.toggle('craft'); else this.notify('🍳 Крафт доступен на кухне дома.', 'warn'); break;
@@ -222,9 +226,12 @@
         if (d < 2.4 && d < bd) { bd = d; best = { id: 'pickup', pickup: p, label: `Собрать: ${p.name}`, action: 'pickup', pos: p.mesh.position }; }
       }
       // Такси
-      if (this.taxi.active && this.taxi.state === 'waiting' && this.taxi.mesh) {
-        const d = this.taxi.mesh.position.distanceTo(this.player.pos);
-        if (d < 8 && d < bd) { bd = d; best = { id: 'taxi_board', label: 'Сесть в такси', action: 'board', pos: this.taxi.mesh.position }; }
+      if (this.cab.state === 'waiting' && this.cab.mesh) {
+        const d = this.cab.mesh.position.distanceTo(this.player.pos);
+        if (d < 8 && d < bd) {
+          bd = d;
+          best = { id: 'cab_board', label: '🚕 Sugar Cab: выбрать маршрут', action: 'board', pos: this.cab.mesh.position };
+        }
       }
       return best;
     }
@@ -235,6 +242,9 @@
     }
 
     _interact() {
+      // Sugar Cab: выбор маршрута / отдых в пути
+      if (this.cab.state === 'waiting') { this._cabDestinations(); return; }
+      if (this.cab.state === 'riding') { this.cab.tryRest(); return; }
       // Сначала — поднять лежащую рядом еду
       const picked = this.objects.pickup(this.player.pos.clone().add(new THREE.Vector3(0, 1, 0)), 2.4);
       if (picked) {
@@ -283,8 +293,8 @@
           break;
         }
         case 'minigame': this.startMinigame(it.game, it); break;
-        case 'taxi': this.taxi.call(); break;
-        case 'board': this._boardTaxi(); break;
+        case 'taxi': this.cab.call(); break;
+        case 'board': this._cabDestinations(); break;
         case 'mill': this._mill(); break;
         case 'spa': this._spa(); break;
         case 'library': this._library(); break;
@@ -341,6 +351,26 @@
     _rainbowFurry() {
       this.notify('🌈 ЧТО?! Твой друг стал РАДУЖНЫМ!', 'stage');
       this._rainbow = true;
+    }
+
+    /** Выбор пункта назначения для Sugar Cab */
+    _cabDestinations() {
+      const cls = this.cab.rideClass();
+      const fit = cls.fit;
+      const occ = Math.round(U.clamp(fit.volumeFit, 0, 1.3) * 100);
+      const notes = {
+        normal: 'Места достаточно, друг сядет спокойно.',
+        tight: 'Тесно: друг будет заходить боком, диван сожмётся.',
+        phased: 'Салон почти занят — посадка в 6 фаз, понадобится твоя помощь.',
+        cocoon: 'Сзади почти нет места. В пути можно отдохнуть на переднем кресле.',
+      };
+      const locs = FF.LOCATIONS.filter((l) => !l.locked || this.furry.stage >= 7);
+      this.ui.open('actions', {
+        title: `🚕 ${FF.CAB.name}`,
+        sub: `Задний диван будет занят на ${occ}% · ${notes[cls.id] || ''}`,
+        actions: locs.map((l) => ({ act: 'cab_go', id: l.id, label: `📍 ${l.name}` }))
+          .concat([{ act: 'close', label: 'Не сейчас' }]),
+      });
     }
 
     /** Бросить выбранную еду — она физически летит, отскакивает и может застрять в складке */
@@ -762,8 +792,14 @@
         case 'travel': {
           const loc = FF.LOC_BY_ID[ds.id];
           if (loc.locked && this.furry.stage < 7) { this.notify('🔒 Локация откроется позже.', 'warn'); return; }
-          const def = this.taxi.pick();
-          if (!this.inv.spend(def.price)) { this.notify(`🪙 Нужно ${def.price} монет на такси.`, 'warn'); return; }
+          const cls = this.cab.rideClass();
+          if (cls.id === 'impossible') {
+            this.notify('🚕 Друг слишком большой для Sugar Cab — только пешком.', 'warn');
+            return;
+          }
+          if (!this.inv.spend(FF.CAB.price)) {
+            this.notify(`🪙 Нужно ${FF.CAB.price} монет на Sugar Cab.`, 'warn'); return;
+          }
           this.ui.close();
           this._instantTravel(ds.id);
           break;
@@ -844,6 +880,11 @@
           break;
         }
         case 'noop': break;
+        case 'cab_go': {
+          this.ui.close();
+          this.cab.startBoarding(ds.id);
+          break;
+        }
         case 'board_info': {
           const st = parseInt(ds.id, 10);
           const cur = this._boardExpand === st ? null : st;
@@ -1084,6 +1125,7 @@
       this.taxi.update(dt);
       this.boarding.update(dt);
       this.cabin.update(dt);
+      this.cab.update(dt);
       this.objects.update(dt, this.furry);
       this.clothing.update(dt);
       this.weatherSys.update(dt);

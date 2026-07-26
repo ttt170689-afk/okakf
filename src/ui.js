@@ -70,6 +70,7 @@
     updateHUD(dt) {
       const g = this.game, f = g.furry, inv = g.inv, p = g.player;
       this.updateCabinHUD();
+      this.updateCabHUD();
       const stageName = FF.CONFIG.growth.stageNames[f.stage];
       const nextTh = FF.CONFIG.growth.stageThresholds[f.stage + 1];
       const prevTh = FF.CONFIG.growth.stageThresholds[f.stage];
@@ -110,6 +111,41 @@
           <div class="row">В руках: <b>${selFood ? selFood.icon + ' ' + selFood.name + ' (' + selFood.cal + ' кал)' : selIng ? selIng.icon + ' ' + selIng.name : '—'}</b>
             ${inv.selected ? `×${inv.count(inv.selected)}` : ''}</div>
           <div class="row small">${selFood ? 'F — покормить друга' : 'I — инвентарь'} · Q — сменить предмет</div>
+        </div>`;
+    }
+
+    /** HUD Sugar Cab по спецификации */
+    updateCabHUD() {
+      const d = this.game.cab && this.game.cab.hud();
+      if (!d) {
+        if (this._cabEl) { this._cabEl.remove(); this._cabEl = null; }
+        return;
+      }
+      if (!this._cabEl) {
+        this._cabEl = el('div', 'cab-hud');
+        this.hud.appendChild(this._cabEl);
+      }
+      const warn = d.rear > 90;
+      this._cabEl.innerHTML = `
+        <div class="cab-card ${warn ? 'warn' : ''}">
+          <div class="cab-title">🚕 SUGAR CAB</div>
+          ${d.phase ? `<div class="cab-phase">Посадка ${d.phase}
+            ${d.needHold ? '<span class="cab-key">удерживай E</span>' : ''}
+            ${d.needTap ? '<span class="cab-key">жми Space</span>' : ''}</div>` : ''}
+          <div class="bar"><i style="width:${Math.min(100, d.rear)}%;background:${
+            d.rear > 90 ? '#ff6b6b' : d.rear > 65 ? '#ffa04a' : '#7cd66b'}"></i>
+            <u>Задний салон: ${d.rear}% занят</u></div>
+          <div class="bar mini"><i style="width:${d.seat}%;background:#c58bff"></i>
+            <u>Диван сжат: ${d.seat}%</u></div>
+          <div class="bar mini"><i style="width:${d.susp}%;background:#8ac6ff"></i>
+            <u>Нагрузка подвески: ${d.susp}%</u></div>
+          <div class="cab-rows">
+            <div><span>Фурри:</span><b>${d.furryStatus}</b></div>
+            <div><span>Игрок:</span><b>${d.playerStatus}</b></div>
+            <div><span>Маршрут:</span><b>${d.route}</b></div>
+          </div>
+          ${d.resting ? '<div class="cab-rest">🛏 Отдых в пути...</div>'
+            : (d.state === 'riding' ? '<div class="cab-hint"><kbd>E</kbd> отдохнуть до прибытия</div>' : '')}
         </div>`;
     }
 
