@@ -44,7 +44,6 @@
       this._buildPark();
       this._buildMountains();
       this._buildMiscBuildings();
-      this._buildWarehouseOppositeHouse();
       this._buildSecretVault();
       this._buildNPCs();
       this._buildParticles();
@@ -782,38 +781,6 @@
       }
     }
 
-    /* ==================== СКЛАД НАПРОТИВ ДОМА ==================== */
-    _buildWarehouseOppositeHouse() {
-      const cottageL = FF.LOC_BY_ID.cottage;
-      const wx = cottageL.x;
-      const wz = cottageL.z + 50;
-      const g = new THREE.Group();
-      const gy = this.heightAt(wx, wz);
-      g.position.set(wx, gy, wz);
-      const wallMat = new THREE.MeshStandardMaterial({ color: 0x9aa4b0, roughness: 0.85, side: THREE.DoubleSide });
-      const roofMat = mat('warehouse_roof', { color: 0x6a7080, roughness: 0.85 });
-      const W = 16, D = 10, H = 7;
-      g.add(this._box(W, H, 0.5, wallMat, 0, H / 2, -D / 2));
-      g.add(this._box(W, H, 0.5, wallMat, 0, H / 2, D / 2));
-      g.add(this._box(0.5, H, D, wallMat, -W / 2, H / 2, 0));
-      g.add(this._box(0.5, H, D, wallMat, W / 2, H / 2, 0));
-      const roof = new THREE.Mesh(new THREE.SphereGeometry(Math.max(W, D) / 2 * 0.75, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2), roofMat);
-      roof.position.y = H;
-      roof.scale.set(W / (Math.max(W, D) * 0.75), 0.55, D / (Math.max(W, D) * 0.75));
-      g.add(roof);
-      const base = new THREE.Mesh(new THREE.BoxGeometry(W, 0.3, D), wallMat);
-      base.position.set(0, 0.15, 0);
-      g.add(base);
-      this.colliders.push({ type: 'box', x: wx, z: wz, w: W, d: D, h: H + 1 });
-      const sign = this._signboard('📦 Склад', 0x8ab6f0);
-      sign.position.set(0, H + 1.4, D / 2 + 0.2);
-      g.add(sign);
-      g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-      this.scene.add(g);
-      this.interactables.push({ id: 'warehouse_opposite', pos: new THREE.Vector3(wx, H / 2 + 1.2, wz + D / 2 + 2), radius: 6,
-        label: '📦 Склад напротив дома', action: 'warehouse_opposite' });
-    }
-
     /* ==================== ЛАБОРАТОРИЯ АРТЁМА ==================== */
     _buildLab() {
       const L = FF.LOC_BY_ID.lab;
@@ -1319,10 +1286,14 @@
      * Открывается по находке карты; телепорт — из меню карты (Tab).
      */
     _buildSecretVault() {
-      const L = FF.LOC_BY_ID.secretvault;
+      // Перемещаем Склад Прадеда (фиолетовый домик) напротив коттеджа (дома)
+      const cottageL = FF.LOC_BY_ID.cottage;
+      const wx = cottageL.x;
+      const wz = cottageL.z + 50;
+      const L = { x: wx, z: wz, r: 14, color: 0x9b7bd4 };
       const g = new THREE.Group();
-      const gy = this.heightAt(L.x, L.z);
-      g.position.set(L.x, gy, L.z);
+      const gy = this.heightAt(wx, wz);
+      g.position.set(wx, gy, wz);
 
       const stone = mat('vaultstone', { color: 0x6a5f7e, roughness: 0.8 });
       const gold = mat('vaultgold', { color: 0xd8b45a, roughness: 0.3, metalness: 0.75 });
