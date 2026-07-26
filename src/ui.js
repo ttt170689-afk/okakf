@@ -624,7 +624,23 @@
               <div><b>${Math.floor(f.stats.massages)}с</b><span>массажа</span></div>
               <div><b>${f.stats.bounces}</b><span>прыжков на животе</span></div>
             </div>
-            <h3>60 зон роста</h3><div class="zones">`;
+            <h3>Эмоции</h3><div class="zones">`;
+          if (f.emotions) {
+            for (const em of f.emotions.summary()) {
+              const pct = Math.round(em.value);
+              html += `<div class="zrow"><span class="zn">${em.name}</span>
+                <span class="zb"><i style="width:${pct}%"></i></span>
+                <span class="zp">${pct}</span></div>`;
+            }
+            const dom = f.emotions.dominant;
+            html += `</div><p style="opacity:.8">Сейчас преобладает: <b>${dom}</b>`;
+            if (g.quirks) {
+              const known = Object.keys(g.quirks.touchMemory).length;
+              html += ` · привычных зон: <b>${known}</b>`;
+            }
+            html += `</p><div class="zones">`;
+          }
+          html += `<h3>60 зон роста</h3>`;
           const groups = {};
           for (const nd of f.nodes) (groups[nd.zone.group] = groups[nd.zone.group] || []).push(nd);
           const gnames = { belly: '🔴 Живот и торс', glutes: '🍑 Ягодицы', thighs: '🦵 Бёдра', chest: '💗 Грудь',

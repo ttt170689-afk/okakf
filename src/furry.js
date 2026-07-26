@@ -19,6 +19,33 @@
   const THREE = global.THREE;
   const U = FF.U;
 
+  /**
+   * АНАТОМИЧЕСКАЯ КАРТА ПРИВЯЗКИ.
+   *
+   * part-id меша -> какие ГРУППЫ зон вправе им управлять.
+   *
+   * Зоны влияют на вершины по радиусу, но радиус большой зоны (у живота он
+   * 0.7 м и растёт со стадией) физически дотягивается до головы, рук и ног.
+   * Раньше это давало артефакт: у вершин макушки единственным «дотянувшимся»
+   * узлом был mid_belly, после нормировки он получал вес 1.0 и уносил морду
+   * вперёд вместе с животом — на скриншоте это выглядело как осколки у лица.
+   *
+   * Карта запрещает такие связи: голова слушает только лицо/шею, ноги — ноги
+   * и бёдра, и т.д. Туловище (part 0) слушает всё — там переходы должны
+   * оставаться плавными.
+   */
+  const PART_ZONES = {
+    0: null,                                                   // торс — без ограничений
+    1: { glutes: 1, thighs: 1, belly: 1, legs: 1, back: 1, misc: 1 },  // таз
+    2: { chest: 1, belly: 1, back: 1, arms: 1, neck: 1 },      // грудь
+    3: { face: 1, neck: 1 },                                   // голова и морда
+    4: { neck: 1, face: 1, chest: 1, back: 1 },                // шея
+    5: { arms: 1, chest: 1, back: 1 },                         // руки
+    6: { legs: 1, thighs: 1, glutes: 1, misc: 1 },             // ноги
+    7: { face: 1, neck: 1 },                                   // уши
+    8: { misc: 1, glutes: 1, back: 1, thighs: 1 },             // хвост
+  };
+
   // Временные векторы: физика в горячем цикле не должна плодить мусор
   const _tmpAccelA = new THREE.Vector3();
   const _tmpAccelB = new THREE.Vector3();
@@ -250,6 +277,8 @@
     uniform float uFurDensity;
     uniform float uBlush;
     uniform float uTime;
+    uniform float uGoose;   // мурашки от нежных касаний
+    uniform float uFog;     // запотевание складок (Under-Belly)
     varying float vStretch;
     varying float vPart;
     varying float vHeat;
@@ -307,6 +336,22 @@
      * Натёртая складка краснеет: подмешиваем тёплый оттенок. */
     baseCol = mix(baseCol, baseCol * vec3(1.32, 0.74, 0.72), clamp(vHeat, 0.0, 1.0) * 0.55);
 
+    /* --- МУРАШКИ ---
+     * Мелкая пупырчатая рябь по коже от нежного прикосновения. */
+    if (uGoose > 0.001) {
+      float bump = noise(vLocalPos * 120.0);
+      float goose = smoothstep(0.55, 0.85, bump) * uGoose;
+      baseCol *= 1.0 + goose * 0.16;
+    }
+
+    /* --- ЗАПОТЕВАНИЕ СКЛАДОК ---
+     * Долго сидишь под животом — воздух влажный, кожа туманится. */
+    if (uFog > 0.001) {
+      float depth = 1.0 - smoothstep(0.0, 0.6, vLocalPos.z);
+      baseCol = mix(baseCol, baseCol * vec3(1.06, 1.02, 1.04) + vec3(0.05),
+                    uFog * depth * 0.5);
+    }
+
     diffuseColor.rgb *= baseCol;
   `;
   const SKIN_FRAG_ROUGH = `
@@ -333,6 +378,8 @@
       uFurDensity: { value: 1 },
       uBlush: { value: 0 },
       uTime: { value: 0 },
+      uGoose: { value: 0 },
+      uFog: { value: 0 },
     };
     mat.onBeforeCompile = (shader) => {
       Object.assign(shader.uniforms, mat.userData.uniforms);
@@ -403,9 +450,15 @@
       this.nodes = FF.ZONES.map((z, i) => new SoftNode(z, i));
       this.nodeById = Object.fromEntries(this.nodes.map((n) => [n.zone.id, n]));
 
-      // Живые подсистемы: желудок и хвост-маятник
+      // Живые подсистемы: желудок, хвост-маятник, эмоции
       if (FF.DigestionSystem) this.digestion = new FF.DigestionSystem(this);
       if (FF.TailSystem) this.tail = new FF.TailSystem(this);
+      if (FF.EmotionEngine) this.emotions = new FF.EmotionEngine(this);
+      this.voicePitch = 1;
+      this.gazeWeight = 0;
+      this.earDroop = 0;
+      this.eyeOpen = 1;
+      this.softBoost = 0;
 
       this._buildBody();
       this._buildFeatures();
@@ -515,6 +568,90 @@
     }
 
     /** Глаза, нос, когти, одежда, крылья */
+    /**
+     * Построить предмет одежды как выборку треугольников тела.
+     *
+     * Идея: одежда — не самостоятельная фигура, а «вторая кожа». Берём
+     * треугольники исходного меша, попадающие в нужную область (торс для
+     * футболки, таз для шорт), и копируем их в отдельную геометрию.
+     * shirtMap/shortsMap хранят соответствие «вершина одежды -> вершина тела»,
+     * по нему каждый кадр переносим деформацию.
+     *
+     * @param {'shirt'|'shorts'} kind
+     */
+    /**
+     * Опорные вершины головы: по ним черты лица следуют за деформацией меша.
+     * Считается один раз — в горячем цикле только суммирование.
+     */
+    _pickHeadSamples() {
+      const partAttr = this.baseGeo.attributes.part
+        ? this.baseGeo.attributes.part.array : null;
+      const base = this.basePos;
+      const S = this.species.scale;
+      const idx = [], muzzle = [];
+      for (let v = 0; v < this.vertexCount; v++) {
+        if (partAttr && (partAttr[v] | 0) !== 3) continue;   // только голова+морда
+        idx.push(v);
+        // Морда — передняя часть головы, по ней определяем «кончик носа»
+        if (base[v * 3 + 2] > 0.18 * S && base[v * 3 + 1] < 2.06 * S) muzzle.push(v);
+      }
+      return {
+        idx: Int32Array.from(idx), len: idx.length,
+        muzzle: Int32Array.from(muzzle), muzzleLen: muzzle.length,
+      };
+    }
+
+    _buildGarment(kind) {
+      const S = this.species.scale;
+      const base = this.basePos;
+      const partAttr = this.baseGeo.attributes.part
+        ? this.baseGeo.attributes.part.array : null;
+      const index = this.mesh.geometry.index;
+      const triCount = index ? index.count / 3 : this.vertexCount / 3;
+
+      // Границы области и допустимые части тела
+      const isShirt = kind === 'shirt';
+      const yMin = (isShirt ? 1.02 : 0.55) * S;
+      const yMax = (isShirt ? 1.86 : 1.02) * S;
+      const okPart = isShirt ? { 0: 1, 2: 1 } : { 0: 1, 1: 1 };
+
+      const map = [];          // вершина одежды -> вершина тела
+      const remap = new Map(); // вершина тела -> индекс в одежде
+      const idx = [];
+
+      for (let t = 0; t < triCount; t++) {
+        const a = index ? index.getX(t * 3) : t * 3;
+        const b = index ? index.getX(t * 3 + 1) : t * 3 + 1;
+        const c = index ? index.getX(t * 3 + 2) : t * 3 + 2;
+        // Треугольник берём, только если ВСЕ его вершины в зоне одежды —
+        // иначе по краю торчали бы рваные куски ткани.
+        let ok = true;
+        for (const v of [a, b, c]) {
+          const y = base[v * 3 + 1];
+          const p = partAttr ? (partAttr[v] | 0) : 0;
+          if (y < yMin || y > yMax || !okPart[p]) { ok = false; break; }
+        }
+        if (!ok) continue;
+        for (const v of [a, b, c]) {
+          let ni = remap.get(v);
+          if (ni === undefined) { ni = map.length; remap.set(v, ni); map.push(v); }
+          idx.push(ni);
+        }
+      }
+
+      const g = new THREE.BufferGeometry();
+      const pos = new Float32Array(map.length * 3);
+      for (let i = 0; i < map.length; i++) {
+        const v = map[i];
+        pos[i * 3] = base[v * 3]; pos[i * 3 + 1] = base[v * 3 + 1]; pos[i * 3 + 2] = base[v * 3 + 2];
+      }
+      g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      g.setIndex(idx);
+      g.computeVertexNormals();
+      if (isShirt) this.shirtMap = map; else this.shortsMap = map;
+      return g;
+    }
+
     _buildFeatures() {
       const S = this.species.scale;
       // Протоген строится иначе: визор вместо глаз и морды
@@ -524,6 +661,7 @@
       const darkMat = new THREE.MeshStandardMaterial({ color: 0x1a1418, roughness: 0.5 });
 
       this.eyes = [];
+      this.pupils = [];      // зрачки двигаются отдельно — для слежения взглядом
       for (const s of [-1, 1]) {
         const g = new THREE.Group();
         const sclera = new THREE.Mesh(new THREE.SphereGeometry(0.052, 16, 12), scleraMat);
@@ -531,6 +669,7 @@
         iris.position.z = 0.028;
         const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.017, 10, 8), darkMat);
         pupil.position.z = 0.048;
+        this.pupils.push(iris);   // радужка вместе со зрачком читается как взгляд
         g.add(sclera, iris, pupil);
         g.position.set(s * 0.10 * S, 2.06 * S, 0.19 * S);
         this.root.add(g);
@@ -560,21 +699,21 @@
       this.root.add(this.mouth);
       this.mouthOpen = 0;
 
-      // Одежда (растягивается и рвётся по стадиям)
+      // Одежда: не отдельные шары, а «вторая кожа» — подмножество вершин
+      // самого тела. Так ткань не может вылезти сквозь плоть.
       const shirtMat = new THREE.MeshStandardMaterial({
         color: 0x5aa7d8, roughness: 0.85, side: THREE.DoubleSide, transparent: true,
       });
-      this.shirt = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 20), shirtMat);
-      this.shirt.scale.set(0.47 * S, 0.52 * S, 0.40 * S);
-      this.shirt.position.set(0, 1.34 * S, 0.02 * S);
+      const shortsMat = new THREE.MeshStandardMaterial({
+        color: 0x3b4a63, roughness: 0.9, side: THREE.DoubleSide, transparent: true,
+      });
+      this.shirt = new THREE.Mesh(this._buildGarment('shirt'), shirtMat);
+      this.shorts = new THREE.Mesh(this._buildGarment('shorts'), shortsMat);
       this.shirt.castShadow = true;
-      this.root.add(this.shirt);
-
-      const shortsMat = new THREE.MeshStandardMaterial({ color: 0x3b4a63, roughness: 0.9, transparent: true });
-      this.shorts = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), shortsMat);
-      this.shorts.scale.set(0.46 * S, 0.28 * S, 0.40 * S);
-      this.shorts.position.set(0, 0.78 * S, -0.02 * S);
-      this.root.add(this.shorts);
+      this.shorts.castShadow = true;
+      // Одежда живёт в той же системе координат, что и меш тела
+      this.mesh.add(this.shirt);
+      this.mesh.add(this.shorts);
 
       // Крылья дракона
       if (this.species.wings) {
@@ -703,12 +842,21 @@
       const S = this.species.scale;
       const tmp = [];
       const v = new THREE.Vector3();
+      const partAttr = this.baseGeo.attributes.part
+        ? this.baseGeo.attributes.part.array : null;
 
       for (let i = 0; i < n; i++) {
         v.set(this.basePos[i * 3], this.basePos[i * 3 + 1], this.basePos[i * 3 + 2]);
+        const part = partAttr ? (partAttr[i] | 0) : -1;
+        const allow = part >= 0 ? PART_ZONES[part] : null;
         tmp.length = 0;
         for (let j = 0; j < this.nodes.length; j++) {
           const nd = this.nodes[j];
+          // Анатомический фильтр: зона живота не имеет права тянуть макушку.
+          // Без него у вершин головы единственным «дотянувшимся» узлом
+          // оказывался mid_belly (радиус 0.7 достаёт до 1.33 м), получал
+          // вес 1.0 после нормировки — и морду рвало вперёд на полтора метра.
+          if (allow && !allow[nd.zone.group]) continue;
           const r = nd.zone.radius * S;
           const dx = v.x - nd.base.x * S, dy = v.y - nd.base.y * S, dz = v.z - nd.base.z * S;
           const d = Math.sqrt(dx * dx + dy * dy + dz * dz);
@@ -736,16 +884,27 @@
       for (const nd of this.nodes) {
         const sp = nd.zone.speed;
         const eff = Math.max(0, cal - sp.start);
-        // Логарифмическая кривая насыщения — «медленное удовольствие»
+        /* Кривая насыщения. Основная часть быстро выходит на «1», но раньше
+         * на этом рост и заканчивался: с 110к до 800к калорий живот
+         * прибавлял всего 0.17 — кормить дальше не имело смысла.
+         *
+         * Теперь после насыщения включается медленный логарифмический
+         * «overdrive»: зона продолжает расти сверх 1.0, поэтому у гиганта
+         * живот действительно становится гигантским. */
         const t = 1 - Math.exp(-eff * sp.mult * (this.build.growthMult || 1) / 42000);
-        nd.growthTarget = U.clamp(t, 0, 1);
+        let g = U.clamp(t, 0, 1);
+        if (t > 0.985) {
+          const over = Math.log10(1 + eff * sp.mult / 90000) * 0.55;
+          g += Math.min(nd.zone.overdrive !== undefined ? nd.zone.overdrive : 0.8, over);
+        }
+        nd.growthTarget = g;
         nd.calories = eff * sp.mult;
         if (instant) nd.growth = nd.growthTarget;
       }
       // Глобальный масштаб тела: гигант становится по-настоящему огромным.
       // Кубический корень от массы — физически правдоподобный рост габаритов.
       const massRatio = 1 + cal * FF.CONFIG.growth.caloriesToKg / FF.CONFIG.growth.baseMassKg;
-      this.bodyScaleTarget = U.clamp(Math.pow(massRatio, 0.30), 1, 3.4);
+      this.bodyScaleTarget = U.clamp(Math.pow(massRatio, 0.30), 1, 4.6);
       if (instant) this.bodyScale = this.bodyScaleTarget;
 
       // Стадия
@@ -754,6 +913,16 @@
       for (let i = 0; i < th.length; i++) if (cal >= th[i]) st = i;
       const prev = this.stage;
       this.stage = st;
+
+      /* --- КОСМИЧЕСКАЯ ФОРМА ---
+       * После cosmicStage друг перестаёт быть «фигурой с животом» и
+       * превращается в почти сферическую массу: конечности и голова тонут
+       * в плоти, силуэт становится планетарным. cosmic — 0..1, им
+       * пользуются деформация меша и камера. */
+      const CS = FF.CONFIG.growth.cosmicStage || 40;
+      this.cosmic = U.clamp((st - CS) / (100 - CS), 0, 1);
+      if (instant) this.cosmicVisual = this.cosmic;
+
       this.mass = FF.CONFIG.growth.baseMassKg + cal * FF.CONFIG.growth.caloriesToKg;
       if (st !== prev && !instant) this._onStageChange(prev, st);
       this._updateMobility();
@@ -798,6 +967,7 @@
       this.stats.fed++;
       if (foodId) this.stats.foodsTried[foodId] = (this.stats.foodsTried[foodId] || 0) + 1;
       this.setEmotion('happy', 3);
+      if (this.emotions) this.emotions.onAction('feed', U.clamp(cal / 400, 0.3, 3));
       // Еда сначала попадает в желудок и распирает живот, и только потом
       // постепенно переходит в жир — см. DigestionSystem.
       if (this.digestion) this.digestion.addFood(cal);
@@ -825,7 +995,7 @@
         if (i >= chews) {
           this.mouthOpen = 0.9;
           this.audio && this.audio.gulp(Math.min(2, 0.7 + cal / 120));
-          setTimeout(() => { this.mouthOpen = 0; this.audio && this.audio.voice('happy', this.opts.species); }, 220);
+          setTimeout(() => { this.mouthOpen = 0; this.audio && this.audio.voice('happy', this.opts.species, this.voicePitch || 1); }, 220);
           return;
         }
         this.mouthOpen = i % 2 ? 0.25 : 0.75;
@@ -835,7 +1005,7 @@
       };
       this.mouthOpen = 0.9;
       setTimeout(doChew, 150);
-      if (cal > 60) setTimeout(() => this.audio && this.audio.voice('moan', this.opts.species), 900);
+      if (cal > 60) setTimeout(() => this.audio && this.audio.voice('moan', this.opts.species, this.voicePitch || 1), 900);
     }
 
     /* -------------------- Взаимодействие -------------------- */
@@ -876,6 +1046,8 @@
       this.wave(worldPoint, 0.7 * strength);
       this.audio && this.audio.poke(nd.soft);
       this.setEmotion(Math.random() < 0.4 ? 'shy' : 'happy', 2);
+      if (this.emotions) this.emotions.onAction('poke_belly', 1);
+      if (this.quirks && nd) { this.quirks.remember(nd.zone.id); this.quirks.onGentleTouch(); }
       this.blush = Math.min(1, this.blush + 0.25);
       if (Math.random() < 0.3) this.say(U.pick(['Ой!', 'Хи-хи, щекотно!', 'Мур~', 'Ня!']));
       return nd;
@@ -904,8 +1076,10 @@
       this.relation += dt * 0.05;
       this.blush = Math.min(1, this.blush + dt * 0.3);
       if (Math.random() < dt * 3) this.audio && this.audio.squish();
-      if (Math.random() < dt * 0.5) { this.audio && this.audio.voice('moan', this.opts.species); this.setEmotion('bliss', 2); }
+      if (Math.random() < dt * 0.5) { this.audio && this.audio.voice('moan', this.opts.species, this.voicePitch || 1); this.setEmotion('bliss', 2); }
       this.stats.massages += dt;
+      if (this.emotions && Math.random() < dt * 2) this.emotions.onAction('massage', dt * 2);
+      if (this.quirks) { this.quirks.remember(nd.zone.id); this.quirks.onGentleTouch(); }
       return nd;
     }
 
@@ -973,7 +1147,7 @@
       this.stats.bounces++;
       this.audio && this.audio.slap(1.4);
       this.setEmotion('giggle', 2.5);
-      if (Math.random() < 0.4) this.audio && this.audio.voice('giggle', this.opts.species);
+      if (Math.random() < 0.4) this.audio && this.audio.voice('giggle', this.opts.species, this.voicePitch || 1);
       // Возвращаем силу отдачи для игрока
       return 4.5 + nd.growth * 7 * power;
     }
@@ -1080,10 +1254,15 @@
         this._far = d > 45;
       }
       // Голод растёт
-      const hungerRate = 1 / (cfg.feeding.hungerPeriodMin * 60);
-      this.hunger = U.clamp(this.hunger + dt * hungerRate * 60 * 0.016, 0, 1);
-      if (this.hunger > 0.75) this.mood = U.clamp(this.mood - dt * 0.01, 0, 1);
-      else this.mood = U.clamp(this.mood + dt * 0.004, 0, 1);
+      if (this.emotions) {
+        // Полная модель: 12 эмоций сами ведут mood и hunger
+        this.emotions.update(dt);
+      } else {
+        const hungerRate = 1 / (cfg.feeding.hungerPeriodMin * 60);
+        this.hunger = U.clamp(this.hunger + dt * hungerRate * 60 * 0.016, 0, 1);
+        if (this.hunger > 0.75) this.mood = U.clamp(this.mood - dt * 0.01, 0, 1);
+        else this.mood = U.clamp(this.mood + dt * 0.004, 0, 1);
+      }
       this.blush = Math.max(0, this.blush - dt * 0.25);
       this.wet = Math.max(0, this.wet - dt * 0.03);
       this.emotionTimer -= dt;
@@ -1103,7 +1282,7 @@
       this.breathPhase += dt * breathRate;
       const breath = Math.sin(this.breathPhase * Math.PI * 2) * breathDepth;
       this._breath = breath;
-      if (Math.random() < dt * 0.25 && this.stage > 4) this.audio && this.audio.voice('breath', this.opts.species);
+      if (Math.random() < dt * 0.25 && this.stage > 4) this.audio && this.audio.voice('breath', this.opts.species, this.voicePitch || 1);
 
       /* --- Сердцебиение: резкий систолический удар, а не синус --- */
       this.heartPhase = (this.heartPhase || 0) + dt * (1.05 + this.stage * 0.04);
@@ -1220,6 +1399,8 @@
       const u = this.material.userData.uniforms;
       u.uWet.value = this.wet;
       u.uBlush.value = this.blush;
+      if (u.uGoose) u.uGoose.value = this.quirks ? this.quirks.goosebumps : 0;
+      if (u.uFog) u.uFog.value = this.quirks ? this.quirks.fogged : 0;
       u.uTime.value = gameHours;
       u.uFurDensity.value = 1 / (1 + this.stage * 0.06);
     }
@@ -1289,6 +1470,19 @@
         disp[j * 3] = tmp.x; disp[j * 3 + 1] = tmp.y; disp[j * 3 + 2] = tmp.z;
       }
       const S = this.species.scale;
+
+      /* Космическая форма: плавно догоняем целевое значение, чтобы переход
+       * между стадиями не был скачком. Радиус сферы берём по габаритам
+       * раздутого живота — так шар получается «сшитым» с телом. */
+      this.cosmicVisual = U.damp(this.cosmicVisual || 0, this.cosmic || 0, 0.6, 1 / 60);
+      const cosmic = this.cosmicVisual;
+      let cosmicCY = 0, cosmicR = 1;
+      if (cosmic > 0.001) {
+        const bg = this.nodeById.mid_belly.growth;
+        cosmicCY = (1.05 + bg * 0.08) * S;
+        cosmicR = (1.15 + bg * 0.55) * S;
+      }
+
       for (let i = 0; i < this.vertexCount; i++) {
         let dx = 0, dy = 0, dz = 0, str = 0, ht = 0, sw = 0, cl = 0;
         for (let k = 0; k < K; k++) {
@@ -1302,9 +1496,28 @@
           sw += nd.sweat * w;
           cl += (nd.zone.cellulite || 0) * nd.growth * w;
         }
-        pos[i * 3] = base[i * 3] + dx * S;
-        pos[i * 3 + 1] = base[i * 3 + 1] + dy * S;
-        pos[i * 3 + 2] = base[i * 3 + 2] + dz * S;
+        let px = base[i * 3] + dx * S;
+        let py = base[i * 3 + 1] + dy * S;
+        let pz = base[i * 3 + 2] + dz * S;
+
+        /* --- КОСМИЧЕСКАЯ ФОРМА ---
+         * На сверхпоздних стадиях силуэт стягивается к сфере: каждая
+         * вершина притягивается к поверхности шара вокруг центра массы.
+         * Голова и лапы при этом тонут в плоти, как на референсе. */
+        if (cosmic > 0.001) {
+          const ox = px, oy = py - cosmicCY, oz = pz;
+          const r = Math.sqrt(ox * ox + oy * oy + oz * oz) || 1e-4;
+          const k = cosmic * (1 - Math.pow(1 - cosmic, 2)) * 0.85;
+          const target = cosmicR;
+          const scale = 1 + (target / r - 1) * k;
+          px = ox * scale;
+          py = cosmicCY + oy * scale * 0.88;   // чуть приплюснут книзу
+          pz = oz * scale;
+        }
+
+        pos[i * 3] = px;
+        pos[i * 3 + 1] = py;
+        pos[i * 3 + 2] = pz;
         stretch[i] = str;
         heatArr[i] = ht;
         sweatArr[i] = sw;
@@ -1405,32 +1618,88 @@
         return;
       }
       const S = this.species.scale;
+      const t = performance.now() * 0.001;
+
+      /* --- Куда «уехала» голова ---
+       * Черты лица раньше висели на фиксированных координатах, а меш головы
+       * при этом деформируется вместе с зонами лица и шеи. С ростом стадии
+       * расхождение достигало 0.28 м — глаза и нос буквально проваливались
+       * внутрь морды. Теперь берём реальное смещение вершин головы и сдвигаем
+       * черты вместе с ней, а вперёд выносим по фактической границе морды. */
+      const hs = this._headSample || (this._headSample = this._pickHeadSamples());
+      let dY = 0, dZ = 0, front = 0;
+      if (hs.len) {
+        const pos = this.mesh.geometry.attributes.position.array;
+        const base = this.basePos;
+        for (let i = 0; i < hs.len; i++) {
+          const v = hs.idx[i];
+          dY += pos[v * 3 + 1] - base[v * 3 + 1];
+          dZ += pos[v * 3 + 2] - base[v * 3 + 2];
+        }
+        dY /= hs.len; dZ /= hs.len;
+        // Передняя точка морды: чтобы нос всегда торчал наружу, а не внутрь
+        front = -Infinity;
+        for (let i = 0; i < hs.muzzleLen; i++) {
+          const v = hs.muzzle[i];
+          if (pos[v * 3 + 2] > front) front = pos[v * 3 + 2];
+        }
+      }
       // Голова поднимается при росте шеи/подбородков
       const chinLift = (this.nodeById.chin1.growth + this.nodeById.chin2.growth + this.nodeById.chin3.growth) * 0.045;
-      const headY = 2.06 * S + chinLift;
-      const t = performance.now() * 0.001;
+      const headY = 2.06 * S + chinLift + dY;
+      const faceZ = isFinite(front) && front > 0 ? front : 0.34 * S;
 
       // Моргание
       this._blinkT = (this._blinkT || 0) - dt;
       if (this._blinkT <= 0) { this._blinkT = U.rand(2.2, 6.5); this._blinking = 0.18; }
       this._blinking = Math.max(0, (this._blinking || 0) - dt);
-      const lidClose = this._blinking > 0 ? 1 : (this.emotion === 'bliss' || this.emotion === 'content' ? 0.55 : 0.08);
+      // Сонливость и стеснение прикрывают глаза сами по себе
+      const sleepy = 1 - U.clamp(this.eyeOpen !== undefined ? this.eyeOpen : 1, 0, 1);
+      const lidClose = this._blinking > 0 ? 1
+        : Math.max(sleepy, this.emotion === 'bliss' || this.emotion === 'content' ? 0.55 : 0.08);
 
+      // Глаза сидят на скулах: чуть позади кончика морды и выше неё
+      const eyeZ = faceZ - 0.13 * S + Math.sin(t * 0.7) * 0.002;
       this.eyes.forEach((e, i) => {
         const s = i === 0 ? -1 : 1;
-        e.position.set(s * 0.10 * S, headY, 0.19 * S + Math.sin(t * 0.7) * 0.002);
+        e.position.set(s * 0.10 * S, headY, eyeZ);
         const lid = this.lids[i];
         lid.position.copy(e.position);
         lid.position.y += 0.03;
         lid.scale.y = U.damp(lid.scale.y, 0.08 + lidClose * 1.15, 18, dt);
       });
-      this.nose.position.y = headY - 0.075 * S;
-      this.mouth.position.y = headY - 0.125 * S;
+      // Нос — на самом кончике морды, рот чуть ниже и глубже
+      this.nose.position.set(0, headY - 0.075 * S, faceZ + 0.012 * S);
+      this.mouth.position.set(0, headY - 0.125 * S, faceZ - 0.008 * S);
       this.mouth.scale.set(1 + this.mouthOpen * 0.5, 0.22 + this.mouthOpen * 1.5, 0.5 + this.mouthOpen * 0.4);
 
       // Улыбка/эмоция через наклон глаз
       const happy = this.emotion === 'happy' || this.emotion === 'bliss' || this.emotion === 'giggle';
       this.eyes.forEach((e) => { e.rotation.z = U.damp(e.rotation.z, happy ? 0.2 : 0, 8, dt); });
+
+      /* --- EYE CONTACT: зрачки следят за рукой игрока ---
+       * Друг замечает протянутую ладонь и провожает её взглядом,
+       * предвкушая касание. Смещаем зрачок внутри глазного яблока. */
+      if (this.gazeTarget && this.gazeWeight > 0.01 && this.pupils) {
+        const head = _tmpDisp.set(0, headY, faceZ);
+        this.root.localToWorld(head);
+        const to = _tmpWaveA.copy(this.gazeTarget).sub(head).normalize();
+        // Переводим направление в локальные оси головы
+        const lx = U.clamp(to.x * 0.020, -0.016, 0.016) * this.gazeWeight;
+        const ly = U.clamp(to.y * 0.014, -0.012, 0.012) * this.gazeWeight;
+        this.pupils.forEach((pu) => {
+          pu.position.x = U.damp(pu.position.x, lx, 10, dt);
+          pu.position.y = U.damp(pu.position.y, ly, 10, dt);
+        });
+      }
+
+      /* Уши — часть слитого меша тела, отдельных объектов нет. Их
+       * «опускание» отыгрываем через зону надбровных валиков и наклон
+       * головы: этого достаточно, чтобы читалась сонливость. */
+      const droop = this.earDroop || 0;
+      if (droop > 0.01 && this.nodeById.brow_ridges) {
+        this.nodeById.brow_ridges.offset.y -= droop * 0.004;
+      }
 
       this._updateTailAndWings(dt);
     }
@@ -1451,30 +1720,61 @@
     }
 
     /** Одежда натягивается, задирается и исчезает по стадиям */
+    /**
+     * ОДЕЖДА.
+     *
+     * Раньше футболка и шорты были обычными шарами, которые лишь
+     * масштабировались по росту зон. Тело при этом деформируется по 60 зонам
+     * и растёт неравномерно — поэтому шар быстро переставал совпадать с
+     * силуэтом и торчал наружу синим пузырём прямо сквозь живот.
+     *
+     * Теперь одежда — это КОПИЯ вершин самого тела: берём те же позиции,
+     * что и у кожи, и раздуваем их вдоль нормали на пару сантиметров.
+     * Ткань физически не может оказаться внутри тела или вылезти из него,
+     * потому что повторяет его форму кадр в кадр.
+     */
     _updateClothes() {
-      const S = this.species.scale;
-      const belly = this.nodeById.mid_belly.growth;
-      const upper = this.nodeById.upper_belly.growth;
-      const chest = (this.nodeById.left_moob.growth + this.nodeById.right_moob.growth) * 0.5;
-      const glute = (this.nodeById.lower_left_glute.growth + this.nodeById.lower_right_glute.growth) * 0.5;
-
       const stage = this.stage;
-      // Рубашка растягивается, затем задирается, затем рвётся (исчезает)
       const shirtVisible = stage < 6;
+      const shortsVisible = stage < 7;
       this.shirt.visible = shirtVisible;
-      if (shirtVisible) {
-        const grow = 1 + belly * 0.75 + upper * 0.3;
-        this.shirt.scale.set(0.47 * S * grow, 0.52 * S * (1 + upper * 0.2), 0.40 * S * (1 + belly * 0.9));
-        this.shirt.position.y = (1.34 + belly * 0.30) * S;  // задирается вверх
-        this.shirt.position.z = belly * 0.22 * S;
+      this.shorts.visible = shortsVisible;
+      if (!shirtVisible && !shortsVisible) return;
+
+      const src = this.mesh.geometry.attributes.position.array;
+      const nrm = this.mesh.geometry.attributes.normal.array;
+      const S = this.species.scale;
+
+      // Ткань облегает плоть с небольшим зазором и слегка «надувается»
+      // там, где тело растянуто сильнее.
+      const OFF_SHIRT = 0.022 * S;
+      const OFF_SHORTS = 0.020 * S;
+
+      if (shirtVisible && this.shirtMap) {
+        const dst = this.shirt.geometry.attributes.position.array;
+        for (let i = 0; i < this.shirtMap.length; i++) {
+          const v = this.shirtMap[i];
+          dst[i * 3]     = src[v * 3]     + nrm[v * 3]     * OFF_SHIRT;
+          dst[i * 3 + 1] = src[v * 3 + 1] + nrm[v * 3 + 1] * OFF_SHIRT;
+          dst[i * 3 + 2] = src[v * 3 + 2] + nrm[v * 3 + 2] * OFF_SHIRT;
+        }
+        this.shirt.geometry.attributes.position.needsUpdate = true;
+        this.shirt.geometry.computeVertexNormals();
+        // Чем больше стадия, тем сильнее ткань истончается и рвётся
         this.shirt.material.opacity = U.clamp(1 - Math.max(0, stage - 4) * 0.45, 0.12, 1);
         this.shirt.material.transparent = this.shirt.material.opacity < 1;
       }
-      const shortsVisible = stage < 7;
-      this.shorts.visible = shortsVisible;
-      if (shortsVisible) {
-        this.shorts.scale.set(0.46 * S * (1 + glute * 0.85), 0.28 * S * (1 + glute * 0.3), 0.40 * S * (1 + glute * 0.9));
-        this.shorts.position.y = (0.78 - glute * 0.05) * S;
+
+      if (shortsVisible && this.shortsMap) {
+        const dst = this.shorts.geometry.attributes.position.array;
+        for (let i = 0; i < this.shortsMap.length; i++) {
+          const v = this.shortsMap[i];
+          dst[i * 3]     = src[v * 3]     + nrm[v * 3]     * OFF_SHORTS;
+          dst[i * 3 + 1] = src[v * 3 + 1] + nrm[v * 3 + 1] * OFF_SHORTS;
+          dst[i * 3 + 2] = src[v * 3 + 2] + nrm[v * 3 + 2] * OFF_SHORTS;
+        }
+        this.shorts.geometry.attributes.position.needsUpdate = true;
+        this.shorts.geometry.computeVertexNormals();
         this.shorts.material.opacity = U.clamp(1 - Math.max(0, stage - 5) * 0.5, 0.12, 1);
         this.shorts.material.transparent = this.shorts.material.opacity < 1;
       }
@@ -1507,6 +1807,8 @@
         eyeColor: this.opts.eyeColor, stats: this.stats, permanentMobility: this.permanentMobility,
         pos: this.root.position.toArray(),
         digestion: this.digestion ? this.digestion.serialize() : null,
+        emotions: this.emotions ? this.emotions.serialize() : null,
+        quirks: this.quirks ? this.quirks.serialize() : null,
       };
     }
     deserialize(d) {
@@ -1520,6 +1822,8 @@
       if (d.pos) this.root.position.fromArray(d.pos);
       // Старые сейвы поля digestion не содержат — тогда желудок просто пуст
       if (this.digestion) this.digestion.deserialize(d.digestion);
+      if (this.emotions) this.emotions.deserialize(d.emotions);
+      if (this.quirks) this.quirks.deserialize(d.quirks);
       this._updateGrowthTargets(true);
       this.bodyScale = this.bodyScaleTarget;
       this.root.scale.setScalar(this.bodyScale);

@@ -11,6 +11,10 @@
   const THREE = global.THREE;
   const U = FF.U;
 
+  // Переиспользуемые векторы: карабканье считается каждый кадр
+  const _tmpDown = new THREE.Vector3();
+  const _tmpPull = new THREE.Vector3();
+
   const _v1 = new THREE.Vector3();
   const _v2 = new THREE.Vector3();
 
@@ -110,16 +114,29 @@
       }
       if (best && bestD < reach) {
         if (this.keys.ShiftLeft || this.mode === 'climb' || !this.onGround || best.pos.y > this.pos.y + 0.5) {
-          // ХВАТ
+          // ХВАТ: рука не просто «цепляется за точку» — она проваливается
+          // в плоть. Запоминаем, НАСКОЛЬКО глубоко утонули пальцы: по этой
+          // глубине потом тянется складка и сминается жир под кистью.
+          const soft = best.node.soft * best.node.growth;
+          const depth = (0.06 + soft * 0.26) * this.furry.bodyScale;
+          const inward = this.furry.root.worldToLocal(best.pos.clone())
+            .normalize().multiplyScalar(-depth);
+          const anchor = this.furry.root.worldToLocal(best.pos.clone()).add(inward);
           hand.grip = {
             node: best.node,
-            offset: this.furry.root.worldToLocal(best.pos.clone()),
+            offset: anchor,          // якорь ВНУТРИ жира, а не на поверхности
             quality: best.quality,
             slip: 0,
+            depth,                   // глубина погружения кисти
+            surface: this.furry.root.worldToLocal(best.pos.clone()),
           };
+          // Плоть сминается под кистью и тянется за рукой
+          best.node.press(dir, 0.55 + soft * 0.5);
+          best.node.impulse(dir, 6 + soft * 8);
           this.audio && this.audio.squish();
           this.furry.wave(best.pos, 0.4);
           hand.anim.kick(0.35);
+          hand.anim.contactDepth = 0.85;
           this._checkClimbState();
           return;
         }
@@ -144,6 +161,10 @@
         this.climbing = false;
         this.mode = 'walk';
       }
+      // Пока лезем или ползём по телу, плоть расступается охотнее:
+      // это читает physics.resolvePlayer и разрешает «зарыться» в друга.
+      this.furry.playerBurrowing = gripping || this.mode === 'onbelly'
+        || this.mode === 'underbelly' || this.crawling;
     }
 
     /* ==================== ОБНОВЛЕНИЕ ==================== */
@@ -190,6 +211,10 @@
       if (this.mode === 'underbelly') speed *= 0.6;
       // Погружение в мягкую плоть замедляет: чем глубже утонул, тем труднее идти
       speed *= (1 - U.clamp(this.sinkDepth, 0, 0.75) * 0.62) / (this.zoneFriction || 1);
+      // Одежда липнет к шерсти: ползти по телу заметно тяжелее
+      if (this.skinDrag) speed /= this.skinDrag;
+      // Придавлен животом — почти не двигаешься
+      if (this.furry.playerTrapped > 0.1) speed *= 1 - this.furry.playerTrapped * 0.8;
 
       if (wish.lengthSq() > 0) {
         wish.normalize();
@@ -240,6 +265,16 @@
       if (this.onGround && !this.keys.ShiftLeft)
         this.stamina = Math.min(C.maxStamina, this.stamina + dt * C.staminaRegen);
 
+      /* --- ВЕС ИГРОКА ПРОДАВЛИВАЕТ ПЛОТЬ ---
+       * Стоим на друге — под ногами постоянная вмятина, а не просто опора.
+       * Ползём — вминаются ещё и колени: пятно контакта шире и глубже. */
+      if (this.onGround && this.standingZone && this.standingZone.node) {
+        const nd = this.standingZone.node;
+        const wide = this.crawling ? 1.7 : 1;      // на четвереньках давим шире
+        nd.press(_tmpDown.set(0, -1, 0), 0.5 * wide * dt * 6);
+        nd.contactPress = Math.min(1, nd.contactPress + dt * 2.2 * wide);
+      }
+
       // Шаги
       const horiz = Math.hypot(this.vel.x, this.vel.z);
       if (this.onGround && horiz > 0.4) {
@@ -249,6 +284,10 @@
           this.stepDist = 0;
           this.audio && this.audio.step(this.mode === 'onbelly' || this.mode === 'underbelly');
           if (this.mode === 'onbelly') this.furry.wave(this.pos.clone(), 0.5);
+          // Каждый шаг по телу — отдельный толчок в плоть под ногой
+          if (this.standingZone && this.standingZone.node) {
+            this.standingZone.node.impulse(_tmpDown.set(0, -1, 0), 3.5 + horiz * 2);
+          }
         }
         this.headBob += dt * (running ? 13 : 8.5);
       }
@@ -314,9 +353,30 @@
       // Достижение: вершина
       if (this.pos.y > this.furry.topY() - 0.4) FF.Game && FF.Game.achieve('climber');
 
-      // Тело реагирует на висящего игрока — тянет жир вниз
+      /* --- СКЛАДКА НАТЯГИВАЕТСЯ ЗА РУКОЙ ---
+       * Пока висим, жир под кистью не просто дрожит: он тянется в сторону
+       * руки. Чем дальше игрок отвёл кисть от исходной точки хвата, тем
+       * сильнее натяжение — и тем глубже вминается плоть под пальцами. */
       for (const h of grips) {
-        h.grip.node.impulse(new THREE.Vector3(0, -1, 0), 2.4 * dt * 60 * 0.02);
+        const g = h.grip;
+        const nd = g.node;
+        nd.impulse(_tmpDown.set(0, -1, 0), 2.4 * dt * 60 * 0.02);
+
+        if (g.surface) {
+          // Насколько кисть увела складку от её покоя
+          const handLocal = this.furry.root.worldToLocal(
+            this.furry.root.localToWorld(g.offset.clone()));
+          const pull = _tmpPull.copy(handLocal).sub(g.surface);
+          const dist = pull.length();
+          if (dist > 0.001) {
+            // Тянем узел зоны вслед за рукой: складка вытягивается
+            const k = Math.min(1, dist * 2.2) * (0.4 + nd.soft * 0.6);
+            nd.impulse(pull.normalize(), k * 9 * dt * 60 * 0.016);
+          }
+          // Пальцы продолжают вминать плоть, пока держат
+          nd.press(_tmpDown.set(0, -0.3, -1).normalize(), g.depth * 1.4 * dt * 6);
+          nd.contactPress = Math.min(1, nd.contactPress + dt * 2.5);
+        }
       }
     }
 
@@ -523,6 +583,9 @@
 
       // Тряска, когда стоишь на колышущемся животе
       let shake = new THREE.Vector3();
+      // Гравитационные волны: каждый шаг гиганта отдаёт в камеру
+      const mp = FF.Game && FF.Game.massPhys;
+      if (mp && mp.shake.lengthSq() > 1e-8) shake.add(mp.shake);
       if (this.mode === 'onbelly') {
         const n = this.furry.nodeById.mid_belly;
         shake.set(n.offset.x * 0.6, n.offset.y * 0.8, n.offset.z * 0.6);

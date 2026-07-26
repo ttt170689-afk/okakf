@@ -581,8 +581,23 @@
       this._brakeT = (this._brakeT || 0) - dt;
       if (this._brakeT <= 0) {
         this._brakeT = U.rand(5, 11);
-        this.longAccel -= 1.5;
-        g.notify('🛑 Торможение!', 'info');
+        // Перегруженная машина тормозит втрое дольше: удар инерции сильнее,
+        // и вся масса друга едет вперёд, вминаясь в передние кресла.
+        const over = this.overload || 0;
+        this.longAccel -= 1.5 * (1 + over * 2);
+        this._brakeHold = 0.9 + over * 1.8;
+        g.notify(over > 0.4 ? '🛑 ТОРМОЗИТ... ДОЛГО! Масса едет вперёд!' : '🛑 Торможение!',
+          over > 0.4 ? 'warn' : 'info');
+        if (over > 0.2) {
+          const belly = f.nodeById.mid_belly;
+          if (belly) belly.impulse(new THREE.Vector3(0, -0.2, 1).normalize(), 30 * (0.5 + over));
+          f.wave(f.root.position.clone(), 1.8 * (0.5 + over));
+        }
+      }
+      // Пока «тормозной путь» не кончился, машина продолжает вязко замедляться
+      if (this._brakeHold > 0) {
+        this._brakeHold -= dt;
+        this.rideProgress -= dt / travelSec * 0.35;
       }
 
       // --- Занятость и сжатие дивана ---
@@ -602,13 +617,31 @@
       this.suspFront += this.suspVelF * dt;
       this.bodyPitch = U.damp(this.bodyPitch, (this.suspRear - this.suspFront) * 0.55, 6, dt);
 
+      /* --- ПЕРЕГРУЗ: искры из-под днища и крен на два колеса ---
+       * Когда друг тяжелее, чем рассчитана подвеска, задняя ось садится
+       * до упора: снизу чиркает металл, а на поворотах масса перекатывается
+       * и машина реально приподнимается на внутренних колёсах. */
+      const overload = U.clamp((f.mass - 1400) / 1600, 0, 1);
+      this.overload = overload;
+      if (overload > 0.05) {
+        // Металл чиркает по асфальту
+        if (Math.abs(this.speed || 0) > 1.5 && Math.random() < dt * 9 * overload) {
+          g.audio && g.audio.noise && g.audio.noise({
+            dur: 0.11, gain: 0.11 * overload, filter: 'highpass', freq: 3400, sweepTo: 6000 });
+        }
+        // Крен на повороте: масса перекатывается в салоне
+        this.rollOver = U.damp(this.rollOver || 0,
+          U.clamp(Math.abs(this.lateralAccel) * 0.05 * overload, 0, 0.28), 4, dt);
+      } else this.rollOver = U.damp(this.rollOver || 0, 0, 5, dt);
+
       if (this.bodyMesh) {
         const sag = (this.suspRear + this.suspFront) * 0.5;
         this.bodyMesh.position.y = CAB.bodyH * 0.40 + sag;
         this.cabinTopMesh.position.y = CAB.bodyH * 0.86 + sag;
         this.roofMesh.position.y = CAB.bodyH * 1.08 + sag;
         this.mesh.rotation.x = this.bodyPitch;
-        this.mesh.rotation.z = U.damp(this.mesh.rotation.z, this.lateralAccel * 0.024, 5, dt);
+        this.mesh.rotation.z = U.damp(this.mesh.rotation.z,
+          this.lateralAccel * 0.024 + Math.sign(this.lateralAccel || 1) * (this.rollOver || 0), 5, dt);
       }
       if (this.interior) this.interior.position.y = (this.suspRear + this.suspFront) * 0.5;
 

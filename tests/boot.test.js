@@ -41,7 +41,7 @@ const _t=require('../libs/three.min.js'); global.THREE=global.THREE||window.THRE
 THREE.WebGLRenderer=function(){return{domElement:el('canvas'),shadowMap:{enabled:false,type:0},
   setSize(){},setPixelRatio(){},setClearColor(){},render(){},dispose(){},getContext:()=>({}),
   capabilities:{isWebGL2:true,getMaxAnisotropy:()=>1},info:{render:{}},outputColorSpace:'',toneMapping:0,toneMappingExposure:1};};
-const files=['config','utils','audio','physics','lifesystems','furry','world','hands','player','playerbody',
+const files=['config','utils','audio','physics','lifesystems','emotions','massphysics','furry','world','hands','player','playerbody',
              'gameplay','systems','minigames','boarding','cabin','sugarcab','ui','game'];
 for(const f of files){
   try{ require('../src/'+f+'.js'); }
@@ -50,7 +50,7 @@ for(const f of files){
 console.log('✓ все '+files.length+' модулей загружены');
 const FF=global.FF;
 const need=['GameClass','CONFIG','U','ZONES','AudioEngine','BodyPhysics','FurryEngine','World','HandsSystem',
-  'PlayerController','PlayerBody','DigestionSystem','TailSystem','UnderBellyAmbience'];
+  'PlayerController','PlayerBody','DigestionSystem','TailSystem','UnderBellyAmbience','EmotionEngine','ProximitySystem','QuirkSystem','MassPhysics'];
 let miss=need.filter(k=>!FF[k]);
 console.log(miss.length? '✗ не экспортировано: '+miss.join(', ') : '✓ все ключевые классы экспортированы');
 // Пробуем реально создать игру

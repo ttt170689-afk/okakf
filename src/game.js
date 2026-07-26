@@ -65,6 +65,11 @@
       this.notebook = new FF.NotebookSystem(this);
       // Акустика и красная подсветка под животом друга
       this.underBelly = new FF.UnderBellyAmbience(this);
+      // Близость (никаких невидимых стен), привычки и физика массы
+      this.proximity = new FF.ProximitySystem(this);
+      this.quirks = new FF.QuirkSystem(this);
+      this.massPhys = new FF.MassPhysics(this);
+      this.furry.quirks = this.quirks;
       this.homeUpgrades = {};
       this.ui = new FF.UI(this);
 
@@ -604,9 +609,10 @@
         'Виктория: «Конкурс кондитеров скоро. Готовьтесь».',
         'Неизвестный отправитель: «Загляни на старый маяк в полночь...»',
       ];
-      const bonus = U.randInt(5, 25);
+      // В каждом письме — денежный перевод на 500 монет
+      const bonus = 500;
       this.inv.addCoins(bonus);
-      this.notify(`📮 ${U.pick(letters)} (+${bonus} 🪙)`, 'info');
+      this.notify(`📮 ${U.pick(letters)} · Перевод: +${bonus} 🪙`, 'info');
       this.audio.ui('coin');
     }
 
@@ -621,6 +627,7 @@
     }
 
     _bath() {
+      if (this.furry.emotions) this.furry.emotions.onAction('bath', 1);
       this.furry.wet = 1;
       this.furry.mood = U.clamp(this.furry.mood + 0.25, 0, 1);
       if (this.homeUpgrades && this.homeUpgrades.jacuzzi) {
@@ -654,6 +661,7 @@
       nd.press(new THREE.Vector3(0, 0, -1), 0.55);
       f.wave(p, 1.1);
 
+      if (f.emotions) f.emotions.onAction('hug', 1);
       f.mood = U.clamp(f.mood + 0.22, 0, 1);
       f.relation += 3;
       f.setEmotion('bliss', 4);
@@ -683,6 +691,8 @@
     /** Лежанка друга: почесать пузо — настроение и привязанность */
     _petFriend() {
       const f = this.furry;
+      if (f.emotions) f.emotions.onAction('belly_rub', 1);
+      if (this.quirks) { this.quirks.remember('mid_belly'); this.quirks.onGentleTouch(); }
       f.mood = U.clamp(f.mood + 0.15, 0, 1);
       f.relation += 1;
       const lines = ['Мур-р-р~ ещё, ещё!', 'Ой, щекотно!', 'Ммм... хорошо-то как...',
@@ -695,6 +705,7 @@
     /** Домашние весы: точная сводка массы и стадии */
     _weighFriend() {
       const f = this.furry;
+      if (f.emotions) f.emotions.onAction('weigh', 1);
       const G = FF.CONFIG.growth;
       const next = G.stageThresholds[f.stage + 1];
       const left = next ? Math.max(0, next - f.calories) : 0;
@@ -1366,6 +1377,9 @@
         this.underBelly.setActive(this.player.mode === 'underbelly');
         this.underBelly.update(dt);
       }
+      this.proximity && this.proximity.update(dt);
+      this.quirks && this.quirks.update(dt);
+      this.massPhys && this.massPhys.update(dt);
       this.world.update(dt, this.gameHours, this.player.pos);
       this.taxi.update(dt);
       this.boarding.update(dt);

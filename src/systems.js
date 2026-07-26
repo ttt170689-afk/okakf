@@ -357,6 +357,9 @@
     }
 
     _flash() {
+      // Гром пугает друга: он вздрагивает, живот идёт волной
+      const g = this.game;
+      if (g.quirks) setTimeout(() => g.quirks.onLoudSound(1.2), 380);
       const l = this.game.world.ambient;
       const orig = l.intensity;
       l.intensity = orig + 2.4;
