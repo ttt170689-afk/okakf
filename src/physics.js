@@ -575,17 +575,17 @@
 
       let top = -Infinity, zone = null;
       for (const c of this.colliders) {
-        if (!c.standable || c.node.growth < 0.05) continue;
+        if (!c.standable || c.node.growth < 0.03) continue;
         const dx = (local.x - c.center.x) / c.radii.x;
         const dz = (local.z - c.center.z) / c.radii.z;
         const horiz = dx * dx + dz * dz;
         if (horiz >= 1) continue;
-        // Высота верхней полусферы эллипсоида в этой точке
-        const y = c.center.y + c.radii.y * Math.sqrt(1 - horiz);
+        // Более плавная высота верхней точки эллипсоида с мягким переходом
+        const y = c.center.y + c.radii.y * Math.sqrt(Math.max(0, 1 - horiz));
         const worldY = f.root.position.y + y * bs;
         if (worldY > top && (maxY === undefined || worldY <= maxY)) { top = worldY; zone = c; }
       }
-      return zone ? { y: top, zone } : null;
+      return zone ? { y: top, zone, soft: zone ? zone.softness : 0 } : null;
     }
 
     /* --------------------------------------------------------

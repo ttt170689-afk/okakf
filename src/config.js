@@ -161,8 +161,8 @@
     /* ---------- БЛОК 1: ЖИВОТ И ТОРС (10) ---------- */
     Z('upper_belly', 'Верхний живот', 'belly', [0, 1.28, 0.20], [0, 0.15, 1], 0.52, 0.62, SPEED.FAST, 0.85, 0.30, 22, true,
       { folds: [8000, 30000], sound: 'pum' }),
-    Z('mid_belly', 'Средний живот ⭐', 'belly', [0, 1.05, 0.26], [0, -0.05, 1], 0.70, 1.35, SPEED.LIGHTNING, 0.95, 0.20, 46, true,
-      { folds: [5000, 20000, 50000, 150000], sound: 'ploh', main: true }),
+    Z('mid_belly', 'Средний живот ⭐', 'belly', [0, 1.05, 0.26], [0, -0.05, 1], 0.70, 1.35, SPEED.LIGHTNING, 0.98, 0.15, 46, true,
+      { folds: [5000, 20000, 50000, 150000], sound: 'ploh', main: true, hyperSoft: true }),
     Z('lower_belly', 'Нижний живот', 'belly', [0, 0.82, 0.24], [0, -0.35, 1], 0.58, 1.05, SPEED.FAST, 0.93, 0.22, 34, true,
       { folds: [12000, 45000], sound: 'ploh' }),
     Z('apron_fold', 'Apron fold (нижний фартук)', 'belly', [0, 0.60, 0.20], [0, -0.9, 0.6], 0.50, 0.95, SPEED.SLOW, 0.97, 0.16, 28, true,

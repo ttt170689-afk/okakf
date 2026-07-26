@@ -39,10 +39,14 @@
       this.damp = zone.damp;
     }
 
-    /** Импульс по мягкому телу (тычок, шлепок, шаг) */
+    /** Импульс по мягкому телу (тычок, шлепок, шаг) с гипер-реакцией живота */
     impulse(vec, strength) {
       const k = strength / Math.max(3, this.mass);
       this.vel.addScaledVector(vec, k);
+      // ГИПЕР-ФИЗИКА: живот реагирует сильнее, чем другие зоны
+      if (this.zone.id === 'mid_belly' || this.zone.id === 'lower_belly' || this.zone.id === 'upper_belly' || this.zone.id === 'apron_fold') {
+        this.vel.multiplyScalar(1.35 + this.growth * 0.55);
+      }
     }
 
     /** Вмятина в точке касания */
@@ -343,6 +347,7 @@
       const S = this.species.scale;
       // Протоген строится иначе: визор вместо глаз и морды
       if (this.species.protogen) return this._buildProtogenFeatures();
+      // --- Милое личико: глаза больше, нос меньше, морда милее ---
       const eyeMat = new THREE.MeshStandardMaterial({ color: this.opts.eyeColor, roughness: 0.15, emissive: 0x111111 });
       const scleraMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
       const darkMat = new THREE.MeshStandardMaterial({ color: 0x1a1418, roughness: 0.5 });
@@ -350,13 +355,13 @@
       this.eyes = [];
       for (const s of [-1, 1]) {
         const g = new THREE.Group();
-        const sclera = new THREE.Mesh(new THREE.SphereGeometry(0.052, 16, 12), scleraMat);
-        const iris = new THREE.Mesh(new THREE.SphereGeometry(0.034, 14, 10), eyeMat);
-        iris.position.z = 0.028;
-        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.017, 10, 8), darkMat);
-        pupil.position.z = 0.048;
+        const sclera = new THREE.Mesh(new THREE.SphereGeometry(0.065, 20, 14), scleraMat); // больше глаза
+        const iris = new THREE.Mesh(new THREE.SphereGeometry(0.044, 16, 12), eyeMat); // больше радужка
+        iris.position.z = 0.032;
+        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.020, 12, 9), darkMat); // милые зрачки
+        pupil.position.z = 0.052;
         g.add(sclera, iris, pupil);
-        g.position.set(s * 0.10 * S, 2.06 * S, 0.19 * S);
+        g.position.set(s * 0.11 * S, 2.08 * S, 0.18 * S); // чуть выше для милости
         this.root.add(g);
         this.eyes.push(g);
       }
@@ -370,9 +375,9 @@
         return lid;
       });
 
-      // Нос
-      this.nose = new THREE.Mesh(new THREE.SphereGeometry(0.035 * S, 12, 10), darkMat);
-      this.nose.position.set(0, 1.985 * S, 0.345 * S);
+      // Нос — милый, маленький
+      this.nose = new THREE.Mesh(new THREE.SphereGeometry(0.025 * S, 12, 10), darkMat);
+      this.nose.position.set(0, 1.995 * S, 0.30 * S);
       this.root.add(this.nose);
 
       // Рот (открывается при еде)
@@ -566,10 +571,12 @@
         nd.calories = eff * sp.mult;
         if (instant) nd.growth = nd.growthTarget;
       }
-      // Глобальный масштаб тела: гигант становится по-настоящему огромным.
-      // Кубический корень от массы — физически правдоподобный рост габаритов.
+      // Глобальный масштаб тела: гигант становится огромным.
+      // Теперь растёт и в ширину (x, z), не только вверх (y), чтобы живот был объёмным.
       const massRatio = 1 + cal * FF.CONFIG.growth.caloriesToKg / FF.CONFIG.growth.baseMassKg;
-      this.bodyScaleTarget = U.clamp(Math.pow(massRatio, 0.30), 1, 3.4);
+      const cubic = Math.pow(massRatio, 0.30);
+      // Ширина растёт чуть быстрее, чем высота — жир идёт вширь, а не в небо
+      this.bodyScaleTarget = U.clamp(cubic * (1 + this.stage * 0.06), 1, 3.8);
       if (instant) this.bodyScale = this.bodyScaleTarget;
 
       // Стадия
@@ -823,6 +830,15 @@
       if (this.emotionTimer <= 0) this.emotion = this.hunger > 0.7 ? 'hungry' : this.mood > 0.7 ? 'content' : 'neutral';
       this.speechTimer -= dt;
       this._updateMobility();
+
+      // ГИПЕР-ФИЗИКА ЖИВОТА: постоянное мягкое колыхание + усиление при касании
+      for (const nd of this.nodes) {
+        if (nd.zone.group === 'belly') {
+          const shake = Math.sin(performance.now() * 0.008 + nd.index * 2.1) * 0.028 * (1 + nd.growth);
+          nd.offset.x += shake * dt * 30;
+          nd.offset.z += Math.sin(performance.now() * 0.006 + nd.index) * 0.018 * (1 + nd.growth) * dt * 30;
+        }
+      }
 
       // Дыхание
       const breathRate = 0.55 + this.stage * 0.07 + (1 - this.mood) * 0.1;
