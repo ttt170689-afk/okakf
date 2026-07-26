@@ -991,14 +991,14 @@ class FurryEngine {
           // Глубокое провисание под гравитацией — нижняя часть живота свисает намного ниже пояса
           // и ложится на верхнюю часть бёдер
           if (nd.zone.id === 'lower_belly' || nd.zone.id === 'apron_fold') {
-            const extraSag = Math.sin(performance.now() * 0.003 + nd.index) * 0.08 * (0.8 + nd.growth);
-            nd.offset.y -= extraSag * dt * 60; // провисание вниз, но не ниже предела
-            // Ограничение, чтобы фартук не «отрывался» от тела
-            if (nd.offset.y < -0.35) nd.offset.y = -0.35;
+            const extraSag = Math.sin(performance.now() * 0.003 + nd.index) * 0.14 * (0.8 + nd.growth);
+            nd.offset.y -= extraSag * dt * 60; // очень сильное провисание вниз
+            // Ограничение, чтобы фартук висел очень низко, но не отрывался
+            if (nd.offset.y < -0.55) nd.offset.y = -0.55;
           }
           // Пупок (впадина) углубляется с ростом, утопает в складках
           if (nd.zone.id === 'navel' && nd.growth > 0.2) {
-            const navelSink = Math.sin(performance.now() * 0.002) * 0.05 * nd.growth;
+            const navelSink = Math.sin(performance.now() * 0.002) * 0.08 * nd.growth;
             nd.offset.y -= navelSink * dt * 25;
           }
         }
@@ -1269,17 +1269,17 @@ class FurryEngine {
       const stage = this.stage;
       // Рубашка сильно растягивается, глубоко врезается в верхнюю часть живота,
       // и сильно задирается вверх под весом массивного свисающего живота
-      const shirtVisible = stage < 6;
+      const shirtVisible = stage < 5;
       this.shirt.visible = shirtVisible;
       if (shirtVisible) {
         // Живот очень тяжёлый — ткань глубоко врезается в верх живота и задирается сильно
-        const grow = 1 + belly * 0.8 + lower * 0.6 + apron * 0.85 + upper * 0.30;
-        this.shirt.scale.set(0.47 * S * grow, 0.52 * S * (0.90 + upper * 0.10), 0.40 * S * (1.05 + belly * 0.65));
-        // Майка сильно задирается вверх — нижняя половина живота полностью свободно свисает
-        this.shirt.position.y = (1.34 + belly * 0.65 + lower * 0.45 + apron * 0.35) * S;
-        this.shirt.position.z = (belly * 0.50 + lower * 0.30 + apron * 0.25) * S;
+        const grow = 1 + belly * 1.3 + lower * 1.0 + apron * 1.35 + upper * 0.50;
+        this.shirt.scale.set(0.42 * S * grow, 0.48 * S * (0.80 + upper * 0.10), 0.38 * S * (1.05 + belly * 0.55));
+        // Майка очень сильно задирается вверх — нижняя половина полностью свободна
+        this.shirt.position.y = (1.45 + belly * 0.85 + lower * 0.65 + apron * 0.55) * S;
+        this.shirt.position.z = (belly * 0.55 + lower * 0.35 + apron * 0.35) * S;
         // Ткань глубоко врезается в верх живота — прозрачность и растяжение максимальны
-        this.shirt.material.opacity = U.clamp(1 - Math.max(0, stage - 3) * 0.35, 0.12, 1);
+        this.shirt.material.opacity = U.clamp(1 - Math.max(0, stage - 2) * 0.60, 0.08, 1);
         this.shirt.material.transparent = this.shirt.material.opacity < 0.95;
       }
       const shortsVisible = stage < 7;
