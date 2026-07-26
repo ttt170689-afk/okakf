@@ -150,6 +150,9 @@
   .map .dot:hover{transform:translate(-50%,-50%) scale(1.5)}
   .map .dot span{position:absolute;left:19px;top:-4px;font-size:11px;white-space:nowrap;
     background:rgba(0,0,0,.55);padding:1px 6px;border-radius:6px}
+  .map .dot.secret{background:#c8a8ff;box-shadow:0 0 16px #9b7bd4;
+    border-color:#e0d0ff;animation:vaultglow 2s ease-in-out infinite}
+  @keyframes vaultglow{50%{box-shadow:0 0 26px #b08aff;transform:translate(-50%,-50%) scale(1.25)}}
   .map .me{position:absolute;width:13px;height:13px;border-radius:50%;background:var(--blue);
     transform:translate(-50%,-50%);box-shadow:0 0 14px var(--blue);animation:pulse 1.6s infinite}
   .map .fr{position:absolute;width:17px;height:17px;border-radius:50%;background:var(--pink);
@@ -297,6 +300,8 @@
   .spec:hover{background:rgba(255,207,138,.14)}
   .spec.sel{border-color:var(--gold);background:rgba(255,207,138,.2)}
   .spec .e{font-size:34px} .spec .n{font-size:13px;margin-top:3px}
+  .spec.build{padding:10px 8px}
+  .spec.build .bdesc{font-size:10.5px;opacity:.62;margin-top:4px;line-height:1.3}
   .swatches{display:flex;flex-wrap:wrap;gap:7px;justify-content:center;margin:10px 0}
   .sw{width:30px;height:30px;border-radius:50%;cursor:pointer;border:2px solid transparent;transition:.12s}
   .sw:hover{transform:scale(1.15)} .sw.sel{border-color:#fff;box-shadow:0 0 12px rgba(255,255,255,.6)}
@@ -332,6 +337,9 @@
 
     <h3>Выбери вид друга</h3>
     <div class="chargrid" id="specGrid"></div>
+
+    <h3>Телосложение</h3>
+    <div class="chargrid" id="buildGrid"></div>
 
     <h3>Цвет шерсти</h3>
     <div class="swatches" id="furSw"></div>
@@ -385,8 +393,9 @@
 (function () {
   'use strict';
   const FF = window.FF;
-  const sel = { species: 'fox', furColor: null, eyeColor: FF.EYE_COLORS[0], name: 'Пушистик' };
-  const emojis = { fox: '🦊', wolf: '🐺', dragon: '🐉', lion: '🦁', cat: '🐱', rabbit: '🐰', bear: '🐻', raccoon: '🦝' };
+  const sel = { species: 'fox', build: 'normal', furColor: null, eyeColor: FF.EYE_COLORS[0], name: 'Пушистик' };
+  const emojis = { fox: '🦊', wolf: '🐺', dragon: '🐉', lion: '🦁', cat: '🐱', rabbit: '🐰',
+    bear: '🐻', raccoon: '🦝', protogen: '🤖', protogen_red: '🤖', protogen_gold: '🤖' };
 
   // --- Виды ---
   const grid = document.getElementById('specGrid');
@@ -404,6 +413,21 @@
     };
     grid.appendChild(d);
   }
+  // --- Телосложение ---
+  const bGrid = document.getElementById('buildGrid');
+  for (const [id, bd] of Object.entries(FF.BUILDS)) {
+    const d = document.createElement('div');
+    d.className = 'spec build' + (id === sel.build ? ' sel' : '');
+    d.innerHTML = `<div class="e">${bd.icon}</div><div class="n">${bd.name}</div>` +
+      `<div class="bdesc">${bd.desc}</div>`;
+    d.onclick = () => {
+      sel.build = id;
+      [...bGrid.children].forEach((c) => c.classList.remove('sel'));
+      d.classList.add('sel');
+    };
+    bGrid.appendChild(d);
+  }
+
   // --- Цвета шерсти ---
   const furSw = document.getElementById('furSw');
   FF.FUR_COLORS.forEach((c) => {

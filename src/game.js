@@ -37,7 +37,7 @@
       /* ---------- Мир и персонажи ---------- */
       this.world = new FF.World(this.scene, this.renderer, this.audio);
       this.furry = new FF.FurryEngine(this.scene, {
-        species: startOpts.species, furColor: startOpts.furColor,
+        species: startOpts.species, build: startOpts.build, furColor: startOpts.furColor,
         eyeColor: startOpts.eyeColor, name: startOpts.name,
       }, this.audio);
       this.furry.root.position.set(-58, this.world.heightAt(-58, 70), 70);
@@ -85,6 +85,7 @@
       this.saveTimer = 0;
 
       this._resetDailyStock();
+      this._loadSettings();
       this._bindInput();
       this._giveStartingItems();
 
@@ -300,6 +301,9 @@
         case 'library': this._library(); break;
         case 'bank': this._bank(); break;
         case 'clothes': this._clothes(); break;
+        case 'vault': this._secretVault(); break;
+        case 'vault_map': this._findVaultMap(); break;
+        case 'nightmarket': this._nightMarket(it); break;
         case 'furniture': this._furniture(); break;
         case 'club': this._club(); break;
         case 'mail': this._mail(); break;
@@ -440,6 +444,12 @@
 
     /* ==================== ЛОКАЦИОННЫЕ ДЕЙСТВИЯ ==================== */
     shopLimit(loc, item) {
+      // Тайный склад: бездонные запасы прадеда — по 999 каждого
+      if (loc === 'secretvault') {
+        const k = 'vault:' + item;
+        if (this.shopStock[k] == null) this.shopStock[k] = 999;
+        return this.shopStock[k];
+      }
       const key = loc + ':' + item;
       if (this.shopStock[key] == null) {
         const f = FF.FOOD_BY_ID[item];
@@ -451,7 +461,12 @@
       }
       return this.shopStock[key];
     }
-    _resetDailyStock() { this.shopStock = {}; }
+    _resetDailyStock() {
+      // Склад прадеда не пополняется по дням — он и так бездонный
+      const keep = {};
+      for (const k in this.shopStock) if (k.startsWith('vault:')) keep[k] = this.shopStock[k];
+      this.shopStock = keep;
+    }
 
     _mill() {
       if (!this.inv.has('grain', 2)) { this.notify('🌾 Нужно 2 зерна. Купи на ферме.', 'warn'); return; }
@@ -524,6 +539,50 @@
     }
 
     _clothes() { this.ui.open('wardrobe'); }
+
+    /** Каменная табличка возле пика — открывает склад и телепорт к нему */
+    _findVaultMap() {
+      if (this.secrets.has('vault')) {
+        this.notify('🗺 Ты уже знаешь дорогу к складу. Телепорт — на карте (Tab).', 'info');
+        return;
+      }
+      this.secrets.add('vault');
+      this.notify('🗺 На табличке — карта! Обнаружен ТАЙНЫЙ СКЛАД ПРАДЕДА.', 'quest');
+      this.notify('✨ Теперь к нему можно телепортироваться с карты (Tab) бесплатно.', 'info');
+      this.audio.magic();
+      this.achieve('found_vault');
+      this.visited.add('secretvault');
+      if (this.notebook) this.notebook.add('🗺 Нашёл каменную табличку с картой Тайного склада прадеда.', 'place');
+    }
+
+    /**
+     * ТАЙНЫЙ СКЛАД: легендарные ингредиенты, запас 999 каждого.
+     * Товар не заканчивается и не сбрасывается по дням.
+     */
+    _secretVault() {
+      if (!this.secrets.has('vault')) {
+        this.notify('🔒 Двери запечатаны рунами. Нужна карта — ищи табличку у Пика Наслаждения.', 'warn');
+        this.audio.ui('err');
+        return;
+      }
+      this.ui.open('shop', {
+        label: '🔒 Тайный склад Прадеда', action: 'shop_ing', loc: 'secretvault', vault: true,
+        shop: ['void_sugar', 'time_honey', 'sun_yolk', 'abyss_cocoa', 'titan_cream',
+          'infinity_flour', 'star_powder', 'phoenix_feather', 'dragon_milk', 'moon_sugar',
+          'rainbow_crystal', 'moon_dew', 'glow_mushroom', 'choco_heart', 'vanilla', 'rose_oil'],
+      });
+    }
+
+    /** Ночной рынок работает только затемно */
+    _nightMarket(it) {
+      const h = this.gameHours % 24;
+      if (h > 5.5 && h < 21) {
+        this.notify('🌙 Ночной рынок открыт с 21:00 до 05:30.', 'warn');
+        return;
+      }
+      this.ui.open('shop', { label: '🌙 Ночной рынок «Луна»', action: 'shop_ing',
+        loc: 'nightmarket', shop: it.shop });
+    }
 
     _club() {
       const h = this.gameHours % 24;
@@ -805,7 +864,7 @@
         case 'buy': {
           const isIng = ds.ing === '1';
           const it = isIng ? FF.ING_BY_ID[ds.id] : FF.FOOD_BY_ID[ds.id];
-          const key = (ds.loc || 'stall') + ':' + ds.id;
+          const key = ds.loc === 'secretvault' ? 'vault:' + ds.id : (ds.loc || 'stall') + ':' + ds.id;
           if (this.shopLimit(ds.loc || 'stall', ds.id) <= 0) { this.notify('📦 Сегодня закончилось.', 'warn'); return; }
           if (!this.inv.spend(it.price)) { this.notify('🪙 Не хватает монет.', 'warn'); this.audio.ui('err'); return; }
           this.shopStock[key]--;
@@ -829,6 +888,17 @@
         case 'turnin': this.quests.complete(ds.id); this.ui.render('dialogue', data); break;
         case 'travel': {
           const loc = FF.LOC_BY_ID[ds.id];
+          // Тайный склад: телепорт по руне, бесплатно, но только зная карту
+          if (loc.secret) {
+            if (!this.secrets.has('vault')) {
+              this.notify('🔒 Ты ещё не знаешь дороги туда.', 'warn'); return;
+            }
+            this.ui.close();
+            this._instantTravel(ds.id);
+            this.notify('✨ Руны переносят тебя в Тайный склад...', 'quest');
+            this.audio.magic();
+            return;
+          }
           if (loc.locked && this.furry.stage < 7) { this.notify('🔒 Локация откроется позже.', 'warn'); return; }
           const cls = this.cab.rideClass();
           if (cls.id === 'impossible') {
@@ -963,15 +1033,92 @@
 
     applySetting(key, val) {
       switch (key) {
-        case 'master': FF.CONFIG.audio.masterVolume = val / 100; this.audio.setVolume('master', val / 100); break;
-        case 'music': FF.CONFIG.audio.musicVolume = val / 100; this.audio.setVolume('music', val / 100); break;
-        case 'sfx': FF.CONFIG.audio.sfxVolume = val / 100; this.audio.setVolume('sfx', val / 100); break;
-        case 'furry': FF.CONFIG.audio.furryVolume = val / 100; this.audio.setVolume('furry', val / 100); break;
-        case 'post': FF.CONFIG.post.enabled = !!val; break;
-        case 'shadow': this.renderer.shadowMap.enabled = val > 0; this.world.sun.shadow.mapSize.set(+val, +val);
-          this.world.sun.shadow.map && this.world.sun.shadow.map.dispose(); this.world.sun.shadow.map = null; break;
-        case 'timescale': this.timeScale = parseFloat(val); break;
+        case 'master': FF.CONFIG.audio.masterVolume = val / 100; this.audio.setVolume('master', val / 100); this._saveSettings(); break;
+        case 'music': FF.CONFIG.audio.musicVolume = val / 100; this.audio.setVolume('music', val / 100); this._saveSettings(); break;
+        case 'sfx': FF.CONFIG.audio.sfxVolume = val / 100; this.audio.setVolume('sfx', val / 100); this._saveSettings(); break;
+        case 'furry': FF.CONFIG.audio.furryVolume = val / 100; this.audio.setVolume('furry', val / 100); this._saveSettings(); break;
+        case 'post': FF.CONFIG.post.enabled = !!val; this._saveSettings(); break;
+        case 'shadow': {
+          const size = +val;
+          this.renderer.shadowMap.enabled = size > 0;
+          if (size > 0) this.world.sun.shadow.mapSize.set(size, size);
+          if (this.world.sun.shadow.map) { this.world.sun.shadow.map.dispose(); this.world.sun.shadow.map = null; }
+          this._saveSettings();
+          break;
+        }
+        case 'quality': this.setQuality(+val); break;
+        case 'viewdist': {
+          const m = parseFloat(val);
+          this.camera.far = FF.CONFIG.render.far * m;
+          this.camera.updateProjectionMatrix();
+          this.scene.fog.density = 0.0038 / m;
+          this._saveSettings();
+          break;
+        }
+        case 'lights':
+          // Оставлено для совместимости со старыми сохранениями
+          FF.CONFIG.render.maxActiveLights = +val;
+          this._saveSettings();
+          break;
+        case 'timescale': this.timeScale = parseFloat(val); this._saveSettings(); break;
       }
+    }
+
+    /**
+     * Ручной выбор качества графики. Игра НИКОГДА не меняет его сама —
+     * выбранный уровень запоминается и применяется при следующем запуске.
+     * @param {number} level 0 низкое · 1 среднее · 2 высокое · 3 максимум
+     */
+    setQuality(level) {
+      this.qualityLevel = U.clamp(level, 0, 3);
+      const dpr = window.devicePixelRatio || 1;
+      const presets = [
+        { ratio: Math.min(0.75, dpr), post: false, shadow: 0,    lights: 4,  far: 0.55 },
+        { ratio: Math.min(1.0, dpr),  post: false, shadow: 1024, lights: 8,  far: 0.8 },
+        { ratio: Math.min(1.5, dpr),  post: true,  shadow: 1536, lights: 10, far: 1.0 },
+        { ratio: Math.min(2.0, dpr),  post: true,  shadow: 2048, lights: 20, far: 1.4 },
+      ];
+      const q = presets[this.qualityLevel];
+      this.renderer.setPixelRatio(q.ratio);
+      FF.CONFIG.post.enabled = q.post;
+      this.renderer.shadowMap.enabled = q.shadow > 0;
+      if (q.shadow > 0) this.world.sun.shadow.mapSize.set(q.shadow, q.shadow);
+      if (this.world.sun.shadow.map) { this.world.sun.shadow.map.dispose(); this.world.sun.shadow.map = null; }
+      FF.CONFIG.render.maxActiveLights = q.lights;
+      this.camera.far = FF.CONFIG.render.far * q.far;
+      this.camera.updateProjectionMatrix();
+      this.scene.fog.density = 0.0038 / q.far;
+      this._saveSettings();
+      const names = ['низкое', 'среднее', 'высокое', 'максимальное'];
+      this.notify(`⚙️ Качество графики: ${names[this.qualityLevel]}`, 'info');
+    }
+
+    /** Настройки хранятся отдельно от сейва — переживают «начать заново» */
+    _saveSettings() {
+      try {
+        localStorage.setItem('fatfriend_settings', JSON.stringify({
+          quality: this.qualityLevel,
+          audio: FF.CONFIG.audio,
+          post: FF.CONFIG.post.enabled,
+          lights: FF.CONFIG.render.maxActiveLights,
+          dynamicLights: FF.CONFIG.render.dynamicLights,
+          timeScale: this.timeScale,
+        }));
+      } catch (e) { /* приватный режим — не критично */ }
+    }
+
+    _loadSettings() {
+      try {
+        const raw = localStorage.getItem('fatfriend_settings');
+        if (!raw) { this.setQuality(2); return; }
+        const d = JSON.parse(raw);
+        if (d.audio) Object.assign(FF.CONFIG.audio, d.audio);
+        if (d.timeScale != null) this.timeScale = d.timeScale;
+        this.setQuality(d.quality != null ? d.quality : 2);
+        if (d.post != null) FF.CONFIG.post.enabled = d.post;
+        if (d.lights) FF.CONFIG.render.maxActiveLights = d.lights;
+        if (d.dynamicLights != null) FF.CONFIG.render.dynamicLights = d.dynamicLights;
+      } catch (e) { this.setQuality(2); }
     }
 
     /* ==================== ПЕРЕМЕЩЕНИЕ ==================== */
@@ -1293,40 +1440,6 @@
       else this.renderer.render(this.scene, this.camera);
     }
 
-    /**
-     * ОПТИМИЗАЦИЯ: автоподстройка качества под реальный FPS.
-     * Если кадры проседают — снижаем разрешение рендера и отключаем
-     * тяжёлые эффекты; когда становится легче, возвращаем обратно.
-     */
-    _autoQuality(dt) {
-      this._fpsAcc = (this._fpsAcc || 0) + dt;
-      this._fpsFrames = (this._fpsFrames || 0) + 1;
-      if (this._fpsAcc < 2) return;
-      const fps = this._fpsFrames / this._fpsAcc;
-      this._fpsAcc = 0; this._fpsFrames = 0;
-      if (this.qualityLocked) return;
-
-      const cur = this._qualityLevel != null ? this._qualityLevel : 2;   // 0 low .. 2 high
-      let next = cur;
-      if (fps < 32 && cur > 0) next = cur - 1;
-      else if (fps > 55 && cur < 2) next = cur + 1;
-      if (next === cur) return;
-      this._qualityLevel = next;
-
-      const cap = FF.CONFIG.render.pixelRatioCap;
-      const presets = [
-        { ratio: Math.min(1.0, cap), post: false, shadows: false, lights: 5 },
-        { ratio: Math.min(1.25, cap), post: true, shadows: true, lights: 8 },
-        { ratio: Math.min(window.devicePixelRatio, cap), post: true, shadows: true, lights: 10 },
-      ];
-      const q = presets[next];
-      this.renderer.setPixelRatio(q.ratio);
-      FF.CONFIG.post.enabled = q.post;
-      this.renderer.shadowMap.enabled = q.shadows;
-      FF.CONFIG.render.maxActiveLights = q.lights;
-      this.notify(`⚙️ Качество: ${['низкое', 'среднее', 'высокое'][next]} (${Math.round(fps)} FPS)`, 'info');
-    }
-
     start() {
       let last = performance.now();
       const loop = (now) => {
@@ -1335,7 +1448,6 @@
         // Корректный ход времени: timeScale = игровых минут за реальную секунду
         this.gameHours += dt * this.timeScale / 60;
         try {
-          this._autoQuality(dt);
           this.update(dt);
         } catch (err) {
           console.error('[game loop]', err);

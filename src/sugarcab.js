@@ -529,6 +529,10 @@
       };
       // Игрок садится в переднее кресло
       g.player.mode = 'ride';
+      // FOV салона выставляем ОДИН раз здесь и больше не трогаем
+      this._fovSet = true;
+      g.camera.fov = FF.CONFIG.render.fov + 18;
+      g.camera.updateProjectionMatrix();
       this.playerLocal.set(0.42, CAB.seatH + 0.86, CAB.frontCenterZ);
       this.playerVel.set(0, 0, 0);
       this.resting = false;
@@ -710,11 +714,13 @@
       g.player.pos.copy(world);
       g.player.pos.y -= FF.CONFIG.player.eyeHeight;
 
-      // В тесном салоне расширяем FOV — иначе видно только стену плоти
-      const occ = U.clamp(this.rearOccupancy, 0, 1);
-      const targetFov = FF.CONFIG.render.fov + 14 + occ * 8;
-      g.camera.fov = U.damp(g.camera.fov, this.resting ? FF.CONFIG.render.fov + 6 : targetFov, 3, dt);
-      g.camera.updateProjectionMatrix();
+      // FOV в салоне ФИКСИРОВАН: выставляется один раз при посадке и не
+      // «дышит» во время поездки — постоянные изменения раздражают.
+      if (!this._fovSet) {
+        this._fovSet = true;
+        g.camera.fov = FF.CONFIG.render.fov + 18;
+        g.camera.updateProjectionMatrix();
+      }
 
       // Лёгкая тряска от дороги (cameraCollisionSphere не даёт клипаться)
       if (!this.resting) {
@@ -755,6 +761,7 @@
       // Возвращаем нормальные габариты — плоть распрямляется
       this.cabinSquash = 1;
       g.furry.root.scale.setScalar(g.furry.bodyScale);
+      this._fovSet = false;
       g.camera.fov = FF.CONFIG.render.fov;
       g.camera.updateProjectionMatrix();
       g.notify(`📍 Прибыли: ${loc.name}`, 'quest');

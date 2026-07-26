@@ -207,8 +207,9 @@
       this.audio = audio;
       this.opts = Object.assign({ species: 'fox', furColor: null, eyeColor: 0x4aa3c7, name: 'Пушистик' }, opts);
       this.species = FF.SPECIES[this.opts.species] || FF.SPECIES.fox;
+      this.build = FF.BUILDS[this.opts.build] || FF.BUILDS.normal;
 
-      this.calories = this.species.startCalories || 0;
+      this.calories = (this.species.startCalories || 0) + (this.build.startCalories || 0);
       this.stage = 0;
       this.mood = 0.75;             // 0..1
       this.hunger = 0.2;            // 0..1 (1 = голоден)
@@ -261,12 +262,16 @@
       const M = (x, y, z, sx, sy, sz) => new THREE.Matrix4()
         .makeScale(sx, sy, sz).setPosition(x, y, z);
 
+      // Пропорции зависят от телосложения (тоненький / обычный / толстый)
+      const B = this.build;
+      const T = B.torso, H = B.hips, Lm = B.limbs;
+
       // Торс (эллипсоид высокой детализации — основа деформации)
-      add(new THREE.SphereGeometry(1, 44, 34), M(0, 1.22, 0, 0.44, 0.62, 0.36), 0);
+      add(new THREE.SphereGeometry(1, 44, 34), M(0, 1.22, 0, 0.44 * T, 0.62, 0.36 * T), 0);
       // Таз/бёдра
-      add(new THREE.SphereGeometry(1, 34, 26), M(0, 0.82, -0.06, 0.42, 0.34, 0.36), 1);
+      add(new THREE.SphereGeometry(1, 34, 26), M(0, 0.82, -0.06, 0.42 * H, 0.34, 0.36 * H), 1);
       // Грудь
-      add(new THREE.SphereGeometry(1, 30, 24), M(0, 1.56, 0.04, 0.38, 0.26, 0.30), 2);
+      add(new THREE.SphereGeometry(1, 30, 24), M(0, 1.56, 0.04, 0.38 * T, 0.26, 0.30 * T), 2);
       // Голова
       add(new THREE.SphereGeometry(1, 32, 26), M(0, 2.02, 0.02, 0.24, 0.24, 0.25), 3);
       // Морда
@@ -277,31 +282,38 @@
       // Руки (плечо + предплечье + лапа) x2
       for (const s of [-1, 1]) {
         add(new THREE.SphereGeometry(1, 18, 14), M(s * 0.40, 1.60, 0, 0.15, 0.14, 0.15), 5);
-        add(new THREE.CapsuleGeometry(0.11, 0.26, 6, 14), M(s * 0.46, 1.42, 0, 1, 1, 1), 5);
-        add(new THREE.CapsuleGeometry(0.09, 0.24, 6, 14), M(s * 0.54, 1.14, 0.01, 1, 1, 1), 5);
+        add(new THREE.CapsuleGeometry(0.11 * Lm, 0.26, 6, 14), M(s * 0.46 * T, 1.42, 0, 1, 1, 1), 5);
+        add(new THREE.CapsuleGeometry(0.09 * Lm, 0.24, 6, 14), M(s * 0.54 * T, 1.14, 0.01, 1, 1, 1), 5);
         add(new THREE.SphereGeometry(1, 14, 12), M(s * 0.58, 0.98, 0.03, 0.10, 0.09, 0.10), 5);
       }
       // Ноги (бедро + голень + стопа) x2
       for (const s of [-1, 1]) {
-        add(new THREE.CapsuleGeometry(0.19, 0.26, 6, 18), M(s * 0.21, 0.62, 0.01, 1, 1, 1), 6);
-        add(new THREE.CapsuleGeometry(0.14, 0.22, 6, 16), M(s * 0.23, 0.28, -0.01, 1, 1, 1), 6);
+        add(new THREE.CapsuleGeometry(0.19 * Lm, 0.26, 6, 18), M(s * 0.21 * H, 0.62, 0.01, 1, 1, 1), 6);
+        add(new THREE.CapsuleGeometry(0.14 * Lm, 0.22, 6, 16), M(s * 0.23 * H, 0.28, -0.01, 1, 1, 1), 6);
         add(new THREE.SphereGeometry(1, 14, 12), M(s * 0.23, 0.06, 0.07, 0.11, 0.06, 0.17), 6);
       }
       // Уши
       const earLen = this.species.longEars ? 0.30 : 0.13;
       for (const s of [-1, 1]) {
-        const g = new THREE.ConeGeometry(0.075, earLen * 2, 12);
-        const m = new THREE.Matrix4().makeRotationZ(s * 0.28);
-        m.setPosition(s * 0.13, 2.19 + earLen * 0.4, -0.01);
+        const g = this.species.protogen
+          ? new THREE.BoxGeometry(0.07, 0.26, 0.13)     // угловатые кибер-уши
+          : new THREE.ConeGeometry(0.075, earLen * 2, 12);
+        const m = new THREE.Matrix4().makeRotationZ(s * (this.species.protogen ? 0.42 : 0.28));
+        m.setPosition(s * 0.14, 2.20 + earLen * 0.4, -0.02);
         add(g, m, 7);
       }
-      // Хвост (сегментированный, анимируется отдельно — но геометрия в теле)
-      const tailSegs = 6;
+      // Хвост. У протогена — длинный сужающийся хвост-раптор
+      const isProto = !!this.species.protogen;
+      const tailSegs = isProto ? 9 : 6;
       for (let i = 0; i < tailSegs; i++) {
         const t = i / tailSegs;
-        const r = (this.species.tail === 'thin' ? 0.06 : 0.10) * (1 - t * 0.35) + (this.species.tail === 'bushy' ? 0.06 : 0);
-        add(new THREE.SphereGeometry(1, 12, 10),
-          M(0, 0.98 - t * 0.18, -0.38 - t * 0.30, r, r, r * 1.25), 8);
+        let r;
+        if (isProto) r = 0.13 * (1 - t * 0.82);
+        else r = (this.species.tail === 'thin' ? 0.06 : 0.10) * (1 - t * 0.35)
+          + (this.species.tail === 'bushy' ? 0.06 : 0);
+        const dy = isProto ? 0.98 - t * 0.62 : 0.98 - t * 0.18;
+        const dz = isProto ? -0.36 - t * 0.95 : -0.38 - t * 0.30;
+        add(new THREE.SphereGeometry(1, 12, 10), M(0, dy, dz, r, r, r * (isProto ? 1.6 : 1.25)), 8);
       }
 
       const geo = U.mergeGeometries(parts, ids);
@@ -329,6 +341,8 @@
     /** Глаза, нос, когти, одежда, крылья */
     _buildFeatures() {
       const S = this.species.scale;
+      // Протоген строится иначе: визор вместо глаз и морды
+      if (this.species.protogen) return this._buildProtogenFeatures();
       const eyeMat = new THREE.MeshStandardMaterial({ color: this.opts.eyeColor, roughness: 0.15, emissive: 0x111111 });
       const scleraMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
       const darkMat = new THREE.MeshStandardMaterial({ color: 0x1a1418, roughness: 0.5 });
@@ -409,6 +423,99 @@
     }
 
     /**
+     * ПРОТОГЕН: тёмный визор с光 свечением, кибер-пластины, «волосы»-шипы.
+     * Мимика передаётся рисунком на визоре, а не движением век.
+     */
+    _buildProtogenFeatures() {
+      const S = this.species.scale;
+      const sp = this.species;
+      const plateMat = new THREE.MeshStandardMaterial({
+        color: sp.plate, roughness: 0.42, metalness: 0.55 });
+      this.plateMat = plateMat;
+
+      // --- Корпус визора (тёмный щиток на морде) ---
+      const shell = new THREE.Mesh(new THREE.SphereGeometry(0.27, 20, 14), plateMat);
+      shell.scale.set(1.05, 0.92, 1.15);
+      shell.position.set(0, 2.02 * S, 0.06 * S);
+      this.root.add(shell);
+      this.visorShell = shell;
+
+      // --- Светящееся стекло визора ---
+      const glassGeo = new THREE.SphereGeometry(0.262, 24, 16,
+        -Math.PI * 0.62, Math.PI * 1.24, Math.PI * 0.30, Math.PI * 0.34);
+      const visorMat = new THREE.MeshStandardMaterial({
+        color: 0x0a0f14, roughness: 0.06, metalness: 0.85,
+        emissive: new THREE.Color(sp.visor), emissiveIntensity: 0.85 });
+      this.visorMat = visorMat;
+      const glass = new THREE.Mesh(glassGeo, visorMat);
+      glass.scale.set(1.06, 0.94, 1.18);
+      glass.position.copy(shell.position);
+      glass.position.z += 0.012 * S;
+      this.root.add(glass);
+      this.visorGlass = glass;
+
+      // --- Пиксельные «глаза» на визоре ---
+      const eyeMat = new THREE.MeshBasicMaterial({ color: sp.visor });
+      this.protoEyes = [];
+      for (const side of [-1, 1]) {
+        const e = new THREE.Mesh(new THREE.PlaneGeometry(0.085, 0.05), eyeMat);
+        e.position.set(side * 0.105 * S, 2.055 * S, 0.30 * S);
+        e.rotation.y = side * 0.22;
+        this.root.add(e);
+        this.protoEyes.push(e);
+      }
+      this.protoEyeMat = eyeMat;
+      // Свет от визора
+      const vl = new THREE.PointLight(sp.visor, 0.9, 2.4, 2);
+      vl.position.set(0, 2.04 * S, 0.30 * S);
+      this.root.add(vl);
+      this.visorLight = vl;
+
+      // --- «Волосы»: угловатые пластины назад ---
+      for (let i = 0; i < 7; i++) {
+        const a = -0.75 + i * 0.25;
+        const spike = new THREE.Mesh(new THREE.BoxGeometry(0.07, 0.05, 0.30), plateMat);
+        spike.position.set(Math.sin(a) * 0.20 * S, (2.22 - Math.abs(a) * 0.07) * S, -0.13 * S);
+        spike.rotation.set(-0.42, a * 0.55, a * 0.30);
+        this.root.add(spike);
+      }
+      // Воротник-пластина
+      const collar = new THREE.Mesh(new THREE.TorusGeometry(0.20 * S, 0.045 * S, 8, 18), plateMat);
+      collar.rotation.x = Math.PI / 2;
+      collar.position.set(0, 1.80 * S, 0);
+      this.root.add(collar);
+
+      // Рот и заглушки, чтобы общий код не падал
+      this.mouth = new THREE.Mesh(new THREE.SphereGeometry(0.001, 4, 3),
+        new THREE.MeshBasicMaterial({ visible: false }));
+      this.root.add(this.mouth);
+      this.mouthOpen = 0;
+      this.eyes = [];
+      this.lids = [];
+      this.nose = new THREE.Object3D();
+      this.root.add(this.nose);
+
+      this._buildClothes(S);
+    }
+
+    /** Одежда — общая для всех видов */
+    _buildClothes(S) {
+      const shirtMat = new THREE.MeshStandardMaterial({
+        color: 0x5aa7d8, roughness: 0.85, side: THREE.DoubleSide, transparent: true });
+      this.shirt = new THREE.Mesh(new THREE.SphereGeometry(1, 28, 20), shirtMat);
+      this.shirt.scale.set(0.47 * S, 0.52 * S, 0.40 * S);
+      this.shirt.position.set(0, 1.34 * S, 0.02 * S);
+      this.shirt.castShadow = true;
+      this.root.add(this.shirt);
+
+      const shortsMat = new THREE.MeshStandardMaterial({ color: 0x3b4a63, roughness: 0.9, transparent: true });
+      this.shorts = new THREE.Mesh(new THREE.SphereGeometry(1, 24, 16), shortsMat);
+      this.shorts.scale.set(0.46 * S, 0.28 * S, 0.40 * S);
+      this.shorts.position.set(0, 0.78 * S, -0.02 * S);
+      this.root.add(this.shorts);
+    }
+
+    /**
      * Предрасчёт весов влияния зон на вершины (top-4 по расстоянию).
      * Именно это делает 60 зон физически «раздельными».
      */
@@ -454,7 +561,7 @@
         const sp = nd.zone.speed;
         const eff = Math.max(0, cal - sp.start);
         // Логарифмическая кривая насыщения — «медленное удовольствие»
-        const t = 1 - Math.exp(-eff * sp.mult / 42000);
+        const t = 1 - Math.exp(-eff * sp.mult * (this.build.growthMult || 1) / 42000);
         nd.growthTarget = U.clamp(t, 0, 1);
         nd.calories = eff * sp.mult;
         if (instant) nd.growth = nd.growthTarget;
@@ -477,6 +584,8 @@
     }
 
     _onStageChange(from, to) {
+      // UI может ещё не существовать (стартовая стадия от телосложения)
+      if (!FF.Game || !FF.Game.ui) return;
       if (to > from) {
         FF.Game && FF.Game.notify(`✨ Новая стадия: «${FF.CONFIG.growth.stageNames[to]}»!`, 'stage');
         this.audio && this.audio.growth(1.6);
@@ -869,8 +978,58 @@
       geo.attributes.normal.needsUpdate = true;
     }
 
+    /** Визор протогена: свечение, пиксельные глаза, реакция на эмоции */
+    _updateProtogenFace(dt) {
+      const t = performance.now() * 0.001;
+      const emo = this.emotion;
+      // Яркость визора зависит от настроения
+      const targetGlow = emo === 'happy' || emo === 'bliss' ? 1.6
+        : emo === 'giggle' ? 1.4
+        : emo === 'sad' || emo === 'hungry' ? 0.45
+        : emo === 'shy' ? 1.2 : 0.9;
+      this.visorMat.emissiveIntensity = U.damp(
+        this.visorMat.emissiveIntensity, targetGlow + Math.sin(t * 1.6) * 0.06, 6, dt);
+      if (this.visorLight) this.visorLight.intensity = this.visorMat.emissiveIntensity * 0.85;
+
+      // Цвет: смущение — розовее, голод — тусклее
+      const base = new THREE.Color(this.species.visor);
+      if (emo === 'shy') base.lerp(new THREE.Color(0xff6bb0), 0.45);
+      else if (emo === 'sad' || emo === 'hungry') base.lerp(new THREE.Color(0x224455), 0.4);
+      this.visorMat.emissive.lerp(base, 1 - Math.exp(-5 * dt));
+      if (this.protoEyeMat) this.protoEyeMat.color.lerp(base, 1 - Math.exp(-5 * dt));
+
+      // Пиксельные глаза: форма под эмоцию + моргание
+      this._blinkT = (this._blinkT || 0) - dt;
+      if (this._blinkT <= 0) { this._blinkT = U.rand(2.5, 6); this._blinking = 0.12; }
+      this._blinking = Math.max(0, (this._blinking || 0) - dt);
+      const blink = this._blinking > 0 ? 0.12 : 1;
+      const happy = emo === 'happy' || emo === 'bliss' || emo === 'content';
+      this.protoEyes.forEach((e, i) => {
+        const side = i === 0 ? -1 : 1;
+        e.scale.y = U.damp(e.scale.y, (happy ? 0.55 : 1) * blink, 16, dt);
+        e.scale.x = U.damp(e.scale.x, happy ? 1.25 : 1, 10, dt);
+        e.rotation.z = U.damp(e.rotation.z, happy ? side * 0.28 : 0, 8, dt);
+        // При еде глаза «жуют» вместе с ртом
+        if (this.mouthOpen > 0.3) e.scale.y *= 0.75;
+      });
+
+      // Голова следует за подбородками при росте
+      const chinLift = (this.nodeById.chin1.growth + this.nodeById.chin2.growth) * 0.04;
+      const S = this.species.scale;
+      const hy = 2.02 * S + chinLift;
+      if (this.visorShell) this.visorShell.position.y = hy;
+      if (this.visorGlass) this.visorGlass.position.y = hy;
+      this.protoEyes.forEach((e) => { e.position.y = hy + 0.035 * S; });
+      if (this.visorLight) this.visorLight.position.y = hy + 0.02 * S;
+    }
+
     /** Глаза, веки, рот, хвост */
     _updateFeatures(dt) {
+      if (this.species.protogen) {
+        this._updateProtogenFace(dt);
+        this._updateTailAndWings(dt);
+        return;
+      }
       const S = this.species.scale;
       // Голова поднимается при росте шеи/подбородков
       const chinLift = (this.nodeById.chin1.growth + this.nodeById.chin2.growth + this.nodeById.chin3.growth) * 0.045;
@@ -899,6 +1058,12 @@
       const happy = this.emotion === 'happy' || this.emotion === 'bliss' || this.emotion === 'giggle';
       this.eyes.forEach((e) => { e.rotation.z = U.damp(e.rotation.z, happy ? 0.2 : 0, 8, dt); });
 
+      this._updateTailAndWings(dt);
+    }
+
+    /** Покачивание хвоста и крыльев — общее для всех видов */
+    _updateTailAndWings(dt) {
+      const t = performance.now() * 0.001;
       // Хвост: покачивание пропорционально настроению
       if (!this._tailPhase) this._tailPhase = 0;
       this._tailPhase += dt * (1.2 + this.mood * 2.2);
@@ -964,7 +1129,7 @@
     serialize() {
       return {
         calories: this.calories, mood: this.mood, hunger: this.hunger, relation: this.relation,
-        species: this.opts.species, name: this.opts.name, furColor: this.opts.furColor,
+        species: this.opts.species, build: this.opts.build, name: this.opts.name, furColor: this.opts.furColor,
         eyeColor: this.opts.eyeColor, stats: this.stats, permanentMobility: this.permanentMobility,
         pos: this.root.position.toArray(),
       };

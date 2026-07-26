@@ -282,7 +282,8 @@
             html += `<div class="item ${limit <= 0 ? 'dis' : ''}" data-act="buy" data-id="${id}" data-loc="${data.loc || 'stall'}" data-ing="${isIng ? 1 : 0}">
               <div class="ic">${it.icon}</div><div class="nm">${it.name}</div>
               <div class="sm">${it.price} 🪙${it.cal ? ' · ' + it.cal + ' кал' : ''}</div>
-              <div class="sm ${limit <= 0 ? 'red' : ''}">${limit <= 0 ? 'сегодня всё' : 'осталось: ' + limit}</div></div>`;
+              <div class="sm ${limit <= 0 ? 'red' : ''}">${
+                limit <= 0 ? 'сегодня всё' : limit >= 999 ? '∞ запас: 999' : 'осталось: ' + limit}</div></div>`;
           }
           html += '</div><p class="hint">В этом мире еды МАЛО: у каждой лавки дневной лимит. Готовь сам, ищи ингредиенты, выполняй задания!</p>';
           if (!isIng) html += '<h3>Продать</h3><div class="grid">';
@@ -567,14 +568,19 @@
 
         /* ---------- КАРТА ---------- */
         case 'map': {
-          html = head('🗺️ Карта Sugar City', 'Клик по локации — вызвать такси туда (если есть монеты).');
+          html = head('🗺️ Карта Sugar City',
+            `Клик по локации — поездка на Sugar Cab (${FF.CAB.price} 🪙).` +
+            (g.secrets.has('vault') ? ' ✨ Тайный склад — телепорт бесплатно.' : ''));
           html += '<div class="p-body"><div class="map">';
           const scale = 1.05, ox = 260, oz = 230;
           for (const l of FF.LOCATIONS) {
+            // Секретный склад не показываем, пока не найдена карта
+            if (l.secret && !g.secrets.has('vault')) continue;
             const x = ox + l.x * scale * 0.9, y = oz + l.z * scale * 0.9;
             const vis = g.visited.has(l.id);
-            html += `<div class="dot ${vis ? 'vis' : ''}" style="left:${x}px;top:${y}px" data-act="travel" data-id="${l.id}"
-              title="${l.name}"><span>${l.name}</span></div>`;
+            html += `<div class="dot ${vis ? 'vis' : ''} ${l.secret ? 'secret' : ''}"
+              style="left:${x}px;top:${y}px" data-act="travel" data-id="${l.id}"
+              title="${l.name}"><span>${l.name}${l.secret ? ' ✨' : ''}</span></div>`;
           }
           const px = ox + g.player.pos.x * scale * 0.9, py = oz + g.player.pos.z * scale * 0.9;
           html += `<div class="me" style="left:${px}px;top:${py}px"></div>`;
@@ -668,9 +674,24 @@
               <label>Музыка <input type="range" min="0" max="100" value="${FF.CONFIG.audio.musicVolume * 100}" data-set="music"></label>
               <label>Эффекты <input type="range" min="0" max="100" value="${FF.CONFIG.audio.sfxVolume * 100}" data-set="sfx"></label>
               <label>Голос друга <input type="range" min="0" max="100" value="${FF.CONFIG.audio.furryVolume * 100}" data-set="furry"></label>
+              <label>Качество графики <select data-set="quality">
+                <option value="0" ${g.qualityLevel === 0 ? 'selected' : ''}>Низкое (для слабых ПК)</option>
+                <option value="1" ${g.qualityLevel === 1 ? 'selected' : ''}>Среднее</option>
+                <option value="2" ${g.qualityLevel === 2 ? 'selected' : ''}>Высокое</option>
+                <option value="3" ${g.qualityLevel === 3 ? 'selected' : ''}>Максимальное</option>
+              </select></label>
               <label>Пост-обработка <input type="checkbox" ${FF.CONFIG.post.enabled ? 'checked' : ''} data-set="post"></label>
-              <label>Качество теней <select data-set="shadow">
-                <option value="1024">Среднее</option><option value="2048" selected>Высокое</option><option value="512">Низкое</option></select></label>
+              <label>Тени <select data-set="shadow">
+                <option value="0">Выключить</option>
+                <option value="512">Низкие</option>
+                <option value="1024">Средние</option>
+                <option value="1536" selected>Высокие</option>
+                <option value="2048">Максимум</option></select></label>
+              <label>Дальность прорисовки <select data-set="viewdist">
+                <option value="0.5">Близко</option>
+                <option value="1" selected>Обычно</option>
+                <option value="1.5">Далеко</option></select></label>
+
               <label>Скорость времени <select data-set="timescale">
                 <option value="0.35">Медленно</option><option value="0.75" selected>Обычно</option><option value="2">Быстро</option><option value="0">Пауза</option></select></label>
             </div></div>`;

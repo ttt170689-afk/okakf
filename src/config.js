@@ -27,6 +27,7 @@
       pixelRatioCap: 2,
       shadowMapSize: 1536,
       maxActiveLights: 10,     // одновременно активных источников света
+      dynamicLights: true,     // false = все лампы горят всегда (без переключений)
       exposure: 1.06,
     },
 
@@ -265,6 +266,32 @@
     rabbit: { name: 'Кролик', fur: 0xf0e2d8, belly: 0xfffaf4, ear: 0xe8b6b6, voice: 'squeak',tail: 'puff',   scale: 0.94, longEars: true },
     bear:   { name: 'Медведь',fur: 0x6b4a33, belly: 0xc9a582, ear: 0x4a3122, voice: 'grr',   tail: 'puff',   scale: 1.16, startCalories: 900 },
     raccoon:{ name: 'Енот',   fur: 0x777d86, belly: 0xd9dde2, ear: 0x33383f, voice: 'chit',  tail: 'ringed', scale: 0.98, mask: true },
+    // --- ПРОТОГЕНЫ: киберфурри с визором вместо морды ---
+    protogen: { name: 'Протоген', fur: 0x6e747e, belly: 0xe8ecf2, ear: 0x2a2e36, voice: 'beep',
+      tail: 'raptor', scale: 1.02, protogen: true, visor: 0x14e0e0, plate: 0x2a2e36 },
+    protogen_red: { name: 'Протоген (красный)', fur: 0x7a6a6e, belly: 0xf0e2e2, ear: 0x3a2a2e, voice: 'beep',
+      tail: 'raptor', scale: 1.02, protogen: true, visor: 0xff4466, plate: 0x3a2a2e },
+    protogen_gold: { name: 'Протоген (золотой)', fur: 0x8a8070, belly: 0xf4eede, ear: 0x3a352a, voice: 'beep',
+      tail: 'raptor', scale: 1.04, protogen: true, visor: 0xffc23c, plate: 0x3a352a },
+  };
+
+  /* ============================================================
+   * ТЕЛОСЛОЖЕНИЕ — выбирается отдельно от вида.
+   * Влияет на стартовую массу, пропорции торса и скорость роста.
+   * ============================================================ */
+  const BUILDS = {
+    slim:    { name: 'Тоненький', icon: '🥢', startCalories: 0,
+      torso: 0.80, hips: 0.82, limbs: 0.88, growthMult: 1.15,
+      desc: 'Стройный силуэт. Растёт быстрее — виден каждый приём пищи.' },
+    normal:  { name: 'Обычный',   icon: '🧍', startCalories: 400,
+      torso: 1.00, hips: 1.00, limbs: 1.00, growthMult: 1.00,
+      desc: 'Средние пропорции. Классический баланс.' },
+    chubby:  { name: 'Пухлый',    icon: '🧸', startCalories: 2500,
+      torso: 1.22, hips: 1.24, limbs: 1.10, growthMult: 0.92,
+      desc: 'Уже с мягким животиком на старте.' },
+    thick:   { name: 'Толстый',   icon: '🫃', startCalories: 9000,
+      torso: 1.45, hips: 1.52, limbs: 1.20, growthMult: 0.85,
+      desc: 'Плотное тело, широкие бёдра. Старт сразу с объёмом.' },
   };
 
   const FUR_COLORS = [
@@ -404,6 +431,18 @@
     I('gelatin', 'Желатин', '🧊', 5, 'хозтовары', 'common'),
     I('food_color', 'Пищевой краситель', '🎨', 8, 'хозтовары', 'common'),
     I('silk_thread', 'Эластичная нить', '🧵', 15, 'хозтовары', 'rare'),
+    I('saffron', 'Шафран', '🌺', 32, 'пряности', 'rare'),
+    I('truffle', 'Трюфель', '🍄‍🟫', 48, 'пряности', 'rare'),
+    I('caviar', 'Икра', '🐟', 55, 'рыбная лавка', 'rare'),
+    I('cloudberry', 'Морошка', '🫐', 26, 'ягодная лавка', 'rare'),
+    I('maple_syrup', 'Кленовый сироп', '🍁', 20, 'напитки', 'common'),
+    // --- СЕКРЕТНЫЕ: только в Тайном складе ---
+    I('void_sugar', 'Сахар Пустоты', '🕳️', 400, 'тайный склад', 'legendary'),
+    I('time_honey', 'Мёд Времени', '⏳', 450, 'тайный склад', 'legendary'),
+    I('sun_yolk', 'Солнечный желток', '☀️', 380, 'тайный склад', 'legendary'),
+    I('abyss_cocoa', 'Какао Бездны', '🌑', 420, 'тайный склад', 'legendary'),
+    I('titan_cream', 'Крем Титанов', '⚡', 500, 'тайный склад', 'legendary'),
+    I('infinity_flour', 'Мука Бесконечности', '♾️', 350, 'тайный склад', 'legendary'),
   ];
 
   /* ============================================================
@@ -533,6 +572,17 @@
     { id: 'furniture',  name: 'Мебельный «Мягкий Угол»',      x: -20, z: 66,  r: 10, color: 0xc9a06b, music: 'home' },
     { id: 'toolshop',   name: 'Хозтовары «Всё для друга»',    x: 34,  z: 62,  r: 8,  color: 0x7a8a9a, music: 'lofi' },
     { id: 'giantshop',  name: 'Гипермаркет «ГИГАНТ»',         x: 78,  z: -30, r: 16, color: 0xffb84d, music: 'lofi' },
+    // --- ВТОРАЯ ВОЛНА МАГАЗИНОВ ---
+    { id: 'bakeshop',   name: 'Мучная лавка «Три Колоса»',    x: -84, z: 34,  r: 8,  color: 0xe8c07a, music: 'lofi' },
+    { id: 'spiceshop',  name: 'Пряности «Восточный Ветер»',   x: 56,  z: 54,  r: 8,  color: 0xd87a3a, music: 'lofi' },
+    { id: 'fishshop',   name: 'Рыбная лавка «Синий Плавник»', x: 88,  z: 12,  r: 8,  color: 0x5aa7d8, music: 'lofi' },
+    { id: 'berryshop',  name: 'Ягодная лавка «Лукошко»',      x: -96, z: 60,  r: 8,  color: 0x9b4bd4, music: 'acoustic' },
+    { id: 'cakeshop',   name: 'Торты на заказ «Ярус»',        x: 8,   z: 76,  r: 9,  color: 0xffd9e8, music: 'piano' },
+    { id: 'drinkshop',  name: 'Напитки «Полный Стакан»',      x: -48, z: -34, r: 8,  color: 0x6fbf7a, music: 'lofi' },
+    { id: 'petshop',    name: 'Товары для друга «Лапа»',      x: 30,  z: 78,  r: 8,  color: 0xf0a8c8, music: 'home' },
+    { id: 'nightmarket',name: 'Ночной рынок «Луна»',          x: -14, z: -62, r: 11, color: 0x3a2a6a, music: 'ambient', nightOnly: true },
+    // --- СЕКРЕТНЫЙ СКЛАД В ГОРАХ ---
+    { id: 'secretvault', name: '🔒 Тайный склад Прадеда',     x: 4,   z: -232, r: 14, color: 0x9b7bd4, music: 'ambient', secret: true },
   ];
 
   /* ============================================================
@@ -568,6 +618,15 @@
     { id: 'furn_npc', name: 'Столяр Дубовик', species: 'Бобр', loc: 'furniture', color: 0x8a5a3a },
     { id: 'tool_npc', name: 'Мастер Гвоздик', species: 'Ёж', loc: 'toolshop', color: 0x9aa0a8 },
     { id: 'giant_npc', name: 'Директор Обжоркин', species: 'Морж', loc: 'giantshop', color: 0xc0a890 },
+    { id: 'flour_npc', name: 'Мельничиха Крупа', species: 'Мышь', loc: 'bakeshop', color: 0xd8c8a8 },
+    { id: 'spice_npc', name: 'Пряничник Кардамон', species: 'Верблюд', loc: 'spiceshop', color: 0xd8a068 },
+    { id: 'fish_npc', name: 'Рыбак Гарпун', species: 'Выдра', loc: 'fishshop', color: 0x7a8a9a },
+    { id: 'berry_npc', name: 'Ягодница Малина', species: 'Барсук', loc: 'berryshop', color: 0x9b4bd4 },
+    { id: 'cake_npc', name: 'Кондитер Ярус', species: 'Фламинго', loc: 'cakeshop', color: 0xff9ec4 },
+    { id: 'drink_npc', name: 'Бармен Сироп', species: 'Лягушка', loc: 'drinkshop', color: 0x6fbf7a },
+    { id: 'pet_npc', name: 'Заботница Лапа', species: 'Альпака', loc: 'petshop', color: 0xfff0f0 },
+    { id: 'night_npc', name: 'Торговец в капюшоне', species: '???', loc: 'nightmarket', color: 0x3a2a5a },
+    { id: 'vault_keeper', name: 'Хранитель Склада', species: 'Древний Филин', loc: 'secretvault', color: 0x8a7ad8 },
   ];
 
   /* ============================================================
@@ -641,6 +700,9 @@
     { id: 'cab_full', name: 'Диван занят', desc: 'Занять задний салон на 100%' },
     { id: 'cab_outgrown', name: 'Слишком большой', desc: 'Перерасти Sugar Cab' },
     { id: 'good_boy', name: 'Хороший мальчик', desc: 'Позвать друга — и он придёт' },
+    { id: 'found_vault', name: 'Наследие прадеда', desc: 'Найти Тайный склад в горах' },
+    { id: 'vault_shopper', name: 'Легендарный закупщик', desc: 'Купить легендарный ингредиент на складе' },
+    { id: 'all_shops', name: 'Знаток торговли', desc: 'Побывать во всех магазинах города' },
   ];
 
   /* ============================================================
@@ -744,6 +806,7 @@
   FF.SPEED = SPEED;
   FF.ZONES = ZONES;
   FF.SPECIES = SPECIES;
+  FF.BUILDS = BUILDS;
   FF.FUR_COLORS = FUR_COLORS;
   FF.EYE_COLORS = EYE_COLORS;
   FF.FOOD = FOOD;

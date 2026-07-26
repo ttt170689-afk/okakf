@@ -450,8 +450,7 @@
       world.y += (taxi.suspension || 0) * 0.4;
       g.player.pos.copy(world);
       g.player.pos.y -= FF.CONFIG.player.eyeHeight;
-      g.camera.fov = U.damp(g.camera.fov, FF.CONFIG.render.fov, 4, dt);
-      g.camera.updateProjectionMatrix();
+
     }
 
     taxiSpeed(taxi) {
@@ -464,10 +463,8 @@
       const s = this.squeeze;
       const p = g.player;
 
-      // 1. Поле зрения сужается — ощущение стеснённости
-      const targetFov = FF.CONFIG.render.fov - s * 16;
-      g.camera.fov = U.damp(g.camera.fov, targetFov, 4, dt);
-      g.camera.updateProjectionMatrix();
+      // FOV намеренно НЕ меняем: постоянное «дыхание» камеры раздражает.
+      // Стеснённость передаётся тряской, звуком и HUD.
 
       // 2. Камера прижимается и покачивается от давления
       if (s > 0.3) {

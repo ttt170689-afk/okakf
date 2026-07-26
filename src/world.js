@@ -44,6 +44,7 @@
       this._buildPark();
       this._buildMountains();
       this._buildMiscBuildings();
+      this._buildSecretVault();
       this._buildNPCs();
       this._buildParticles();
       this.weather = 'clear';
@@ -321,10 +322,11 @@
       this.interactables.push({ id: 'taxi_call', pos: this.taxiStop.clone().add(new THREE.Vector3(0, 1, 3)),
         radius: 5, label: 'Вызвать такси (T)', action: 'taxi' });
 
-      // Уличные фонари по площади
+      // Уличные фонари: столбы у всех, но реальный источник света —
+      // только у каждого второго. Экономит половину ламп без потери вида.
       for (let i = 0; i < 12; i++) {
         const a = (i / 12) * Math.PI * 2 + 0.15;
-        this._lamp(Math.cos(a) * 25, Math.sin(a) * 25, g);
+        this._lamp(Math.cos(a) * 25, Math.sin(a) * 25, g, i % 2 === 0);
       }
 
       // Голуби-фурри
@@ -566,9 +568,11 @@
               new THREE.MeshPhysicalMaterial({ color: 0xffd8a8, transparent: true, opacity: 0.6, transmission: 0.6 }));
             tube.position.set(px, 2.4, pz + 1.2); tube.rotation.x = 0.6;
             this.scene.add(tube);
-            const neon = new THREE.PointLight(0x4ad8ff, 1.6, 10, 2);
-            neon.position.set(px, 2.8, pz);
-            this.scene.add(neon); this.lights.push({ light: neon, neon: true });
+            if (i === 1) {   // один неон на все три терминала
+              const neon = new THREE.PointLight(0x4ad8ff, 2.2, 16, 2);
+              neon.position.set(px, 2.8, pz);
+              this.scene.add(neon); this.lights.push({ light: neon, neon: true });
+            }
           }
           this.interactables.push({ id: 'pump', pos: new THREE.Vector3(L.x, 1.6, L.z + 6), radius: 5,
             label: 'Подключить друга к насосу', action: 'minigame', game: 'pump' });
@@ -1156,7 +1160,24 @@
         { id: 'toolshop', w: 11, d: 9, h: 5, color: 0x7a8a9a, sign: '🔧 Всё для друга', action: 'shop_ing',
           shop: ['gelatin', 'food_color', 'silk_thread', 'salt', 'yeast', 'nuts'] },
         { id: 'giantshop', w: 24, d: 20, h: 9, color: 0xffb84d, sign: '🛒 ГИПЕРМАРКЕТ ГИГАНТ', action: 'shop',
-          shop: ['family_bucket', 'mega_pizza', 'sweet_barrel', 'feast_cart', 'big_cake', 'shake_ultra'] }
+          shop: ['family_bucket', 'mega_pizza', 'sweet_barrel', 'feast_cart', 'big_cake', 'shake_ultra'] },
+        // --- ВТОРАЯ ВОЛНА ---
+        { id: 'bakeshop', w: 11, d: 9, h: 5.5, color: 0xe8c07a, sign: '🌾 Три Колоса', action: 'shop_ing',
+          shop: ['flour', 'grain', 'yeast', 'butter', 'infinity_flour'] },
+        { id: 'spiceshop', w: 11, d: 9, h: 5.5, color: 0xd87a3a, sign: '🌶 Восточный Ветер', action: 'shop_ing',
+          shop: ['cinnamon', 'saffron', 'truffle', 'vanilla', 'mint', 'salt'] },
+        { id: 'fishshop', w: 11, d: 9, h: 5, color: 0x5aa7d8, sign: '🐟 Синий Плавник', action: 'shop_ing',
+          shop: ['ice_fish', 'caviar', 'salt'] },
+        { id: 'berryshop', w: 11, d: 9, h: 5, color: 0x9b4bd4, sign: '🫐 Лукошко', action: 'shop_ing',
+          shop: ['berry', 'strawberry', 'cloudberry', 'apple', 'honey'] },
+        { id: 'cakeshop', w: 13, d: 11, h: 6.5, color: 0xffd9e8, sign: '🎂 Ярус', action: 'shop',
+          shop: ['medium_cake', 'big_cake', 'layered_pie', 'wedding_cake', 'rainbow_meringue'] },
+        { id: 'drinkshop', w: 11, d: 9, h: 5, color: 0x6fbf7a, sign: '🥤 Полный Стакан', action: 'shop',
+          shop: ['hot_choco', 'yogurt', 'shake_normal', 'shake_mega', 'condensed'] },
+        { id: 'petshop', w: 11, d: 9, h: 5, color: 0xf0a8c8, sign: '🐾 Лапа', action: 'shop_ing',
+          shop: ['silk_thread', 'gelatin', 'food_color', 'rose_oil'] },
+        { id: 'nightmarket', w: 16, d: 13, h: 6, color: 0x3a2a6a, sign: '🌙 Ночной рынок', action: 'nightmarket',
+          shop: ['moon_dew', 'moon_sugar', 'glow_mushroom', 'rainbow_crystal', 'choco_heart', 'dragon_saliva'] }
       );
 
       for (const d of defs) {
@@ -1247,6 +1268,129 @@
         this.interactables.push({ id: d.id, pos: new THREE.Vector3(L.x, 1.6, L.z + d.d / 2 + 1.6), radius: 4.5,
           label: d.sign, action: d.action, shop: d.shop, loc: d.id });
       }
+    }
+
+    /**
+     * ТАЙНЫЙ СКЛАД ПРАДЕДА — секретный магазин высоко в горах.
+     * Здесь лежат легендарные ингредиенты запасом по 999 штук.
+     * Открывается по находке карты; телепорт — из меню карты (Tab).
+     */
+    _buildSecretVault() {
+      const L = FF.LOC_BY_ID.secretvault;
+      const g = new THREE.Group();
+      const gy = this.heightAt(L.x, L.z);
+      g.position.set(L.x, gy, L.z);
+
+      const stone = mat('vaultstone', { color: 0x6a5f7e, roughness: 0.8 });
+      const gold = mat('vaultgold', { color: 0xd8b45a, roughness: 0.3, metalness: 0.75 });
+      const rune = new THREE.MeshStandardMaterial({ color: 0x9b7bd4, roughness: 0.3,
+        emissive: 0x6a4bb4, emissiveIntensity: 1.4 });
+
+      // Основание-платформа
+      const base = new THREE.Mesh(new THREE.CylinderGeometry(13, 15, 1.6, 12), stone);
+      base.position.y = 0.8;
+      g.add(base);
+
+      // Круглый зал с куполом
+      const hall = new THREE.Mesh(new THREE.CylinderGeometry(9, 9.4, 7, 16, 1, true),
+        new THREE.MeshStandardMaterial({ color: 0x655a78, roughness: 0.8, side: THREE.DoubleSide }));
+      hall.position.y = 5.1;
+      g.add(hall);
+      const dome = new THREE.Mesh(new THREE.SphereGeometry(9.1, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2),
+        new THREE.MeshStandardMaterial({ color: 0x554a66, roughness: 0.78, side: THREE.DoubleSide }));
+      dome.position.y = 8.6;
+      g.add(dome);
+      // Пол
+      const floor = new THREE.Mesh(new THREE.CircleGeometry(9, 24),
+        mat('vaultfloor', { color: 0x4a4058, roughness: 0.6, metalness: 0.2 }));
+      floor.rotation.x = -Math.PI / 2;
+      floor.position.y = 1.62;
+      g.add(floor);
+
+      // Колонны с рунами
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * Math.PI * 2;
+        const col = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.6, 7, 8), stone);
+        col.position.set(Math.cos(a) * 7.6, 5.1, Math.sin(a) * 7.6);
+        g.add(col);
+        const r = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.07, 6, 14), rune);
+        r.rotation.x = Math.PI / 2;
+        r.position.set(Math.cos(a) * 7.6, 4.2, Math.sin(a) * 7.6);
+        g.add(r);
+      }
+
+      // Стеллажи с бочками легендарных ингредиентов
+      const secretIds = ['void_sugar', 'time_honey', 'sun_yolk', 'abyss_cocoa', 'titan_cream', 'infinity_flour'];
+      const cols = [0x2a1a3a, 0xd8a838, 0xffd24a, 0x1a1420, 0x9adfff, 0xf0e8d8];
+      secretIds.forEach((id, i) => {
+        const a = (i / secretIds.length) * Math.PI * 2 + 0.4;
+        const bx = Math.cos(a) * 5.8, bz = Math.sin(a) * 5.8;
+        const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.95, 1.7, 14),
+          new THREE.MeshStandardMaterial({ color: cols[i], roughness: 0.45,
+            emissive: cols[i], emissiveIntensity: 0.25 }));
+        barrel.position.set(bx, 2.5, bz);
+        g.add(barrel);
+        const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.92, 0.92, 0.14, 14), gold);
+        cap.position.set(bx, 3.4, bz);
+        g.add(cap);
+        // Парящий кристалл-образец
+        const gem = new THREE.Mesh(new THREE.OctahedronGeometry(0.34, 0),
+          new THREE.MeshStandardMaterial({ color: cols[i], emissive: cols[i],
+            emissiveIntensity: 1.5, roughness: 0.15 }));
+        gem.position.set(bx, 4.3, bz);
+        gem.userData.float = i;
+        g.add(gem);
+        if (!this.vaultGems) this.vaultGems = [];
+        this.vaultGems.push(gem);
+      });
+
+      // Центральный алтарь-прилавок
+      const altar = new THREE.Mesh(new THREE.CylinderGeometry(2.0, 2.4, 1.3, 12), gold);
+      altar.position.y = 2.3;
+      g.add(altar);
+      const orb = new THREE.Mesh(new THREE.SphereGeometry(0.75, 18, 14),
+        new THREE.MeshStandardMaterial({ color: 0xc8a8ff, emissive: 0x8a5bd6,
+          emissiveIntensity: 1.7, roughness: 0.1 }));
+      orb.position.y = 3.7;
+      g.add(orb);
+      this.vaultOrb = orb;
+
+      // Освещение зала: тёплый общий свет + фиолетовый акцент от сферы
+      const amb = new THREE.PointLight(0xffe0c0, 2.2, 30, 1.7);
+      amb.position.set(0, 5.2, 0);
+      g.add(amb);
+      const vl = new THREE.PointLight(0xb08aff, 3.4, 26, 1.8);
+      vl.position.set(0, 4.2, 0);
+      g.add(vl);
+      this.lights.push({ light: vl, pulse: true });
+      // Подсветка бочек по кругу
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * Math.PI * 2;
+        const sp = new THREE.PointLight(0xffd0a0, 1.8, 18, 1.8);
+        sp.position.set(Math.cos(a) * 5.5, 4.6, Math.sin(a) * 5.5);
+        g.add(sp);
+      }
+      // Купол не глухой: световой люк сверху
+      const oculus = new THREE.Mesh(new THREE.CircleGeometry(2.2, 20),
+        new THREE.MeshStandardMaterial({ color: 0xffe8c8, emissive: 0xffca88,
+          emissiveIntensity: 0.35, side: THREE.DoubleSide }));
+      oculus.rotation.x = Math.PI / 2;
+      oculus.position.y = 8.5;
+      g.add(oculus);
+
+      g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+      this.scene.add(g);
+      this.secretVault = g;
+
+      this.interactables.push({
+        id: 'secretvault', pos: new THREE.Vector3(L.x, gy + 2.5, L.z + 3),
+        radius: 6, label: '🔒 Тайный склад: легендарные ингредиенты', action: 'vault',
+      });
+      // Карта-подсказка на Пике Наслаждения
+      this.interactables.push({
+        id: 'vault_map', pos: new THREE.Vector3(L.x + 18, this.heightAt(L.x + 18, L.z + 26) + 1.5, L.z + 26),
+        radius: 6, label: '🗺 Странная каменная табличка', action: 'vault_map',
+      });
     }
 
     /* ==================== NPC ==================== */
@@ -1383,7 +1527,7 @@
       g.traverse((o) => { o.castShadow = true; });
       return g;
     }
-    _lamp(x, z, parent) {
+    _lamp(x, z, parent, withLight) {
       const g = new THREE.Group();
       const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 5, 8),
         mat('lamppole', { color: 0x3a3a42, roughness: 0.5, metalness: 0.6 }));
@@ -1394,6 +1538,7 @@
       g.add(pole, bulb);
       g.position.set(x, this.heightAt(x, z), z);
       (parent || this.scene).add(g);
+      if (withLight === false) return g;   // столб без источника — дёшево
       const l = new THREE.PointLight(0xffc070, 1.6, 18, 2);
       l.position.set(x, 5.1, z);
       this.scene.add(l);
@@ -1455,11 +1600,9 @@
       mesh.position.set(x, y, z);
       mesh.castShadow = true;
       this.scene.add(mesh);
-      if (glow) {
-        const l = new THREE.PointLight(color, 0.8, 6, 2);
-        l.position.copy(mesh.position);
-        this.scene.add(l);
-      }
+      // Свечение делаем материалом, а не источником света: их десятки,
+      // и каждый добавлял бы нагрузку на все шейдеры сцены.
+      if (glow) mesh.material.emissiveIntensity = 1.6;
       return { mesh, item: itemId, name: ing ? ing.name : itemId, base: y, taken: false, nightOnly, respawn: 0 };
     }
 
@@ -1498,8 +1641,9 @@
       this.scene.fog.color.copy(this.skyUniforms.uBot.value);
 
       // Фонари включаются ночью
+      // Яркость меняется плавно и напрямую — visible никогда не трогаем,
+      // поэтому шейдеры не пересобираются и рывков нет.
       for (const l of this.lights) {
-        if (l._active === false) continue;   // выключённые не обновляем
         if (l.street) {
           const on = isNight ? 1 : 0.06;
           l.light.intensity = U.damp(l.light.intensity, 1.9 * on, 2, dt);
@@ -1613,6 +1757,18 @@
       // Ночной страж появляется в 3 часа ночи
       if (this.nightGuard) this.nightGuard.visible = (h >= 3 && h < 4);
 
+      // Тайный склад: парящие кристаллы и пульсирующая сфера
+      if (this.vaultGems) {
+        for (const gem of this.vaultGems) {
+          gem.position.y = 4.3 + Math.sin(t * 1.3 + gem.userData.float) * 0.22;
+          gem.rotation.y += dt * 0.8;
+        }
+      }
+      if (this.vaultOrb) {
+        this.vaultOrb.rotation.y += dt * 0.35;
+        this.vaultOrb.scale.setScalar(1 + Math.sin(t * 1.7) * 0.06);
+      }
+
       // Часовой звон
       const hourInt = Math.floor(h);
       if (this._lastHour !== hourInt) {
@@ -1623,7 +1779,6 @@
       }
 
       this._updateWeather(dt);
-      this._cullLights(playerPos, dt);
     }
 
     setWeather(w) {
@@ -1665,38 +1820,18 @@
      * поэтому 75 ламп — это неподъёмно. Держим включёнными только
      * несколько ближайших к игроку, остальные гасим (intensity = 0).
      */
-    _cullLights(playerPos, dt) {
-      if (!playerPos) return;
-      this._cullTimer = (this._cullTimer || 0) - dt;
-      if (this._cullTimer > 0) return;
-      this._cullTimer = 0.35;   // пересчёт 3 раза в секунду — незаметно
-
-      const budget = FF.CONFIG.render.maxActiveLights;
-      // Собираем ВСЕ точечные источники сцены один раз (включая те,
-      // что добавлены напрямую в группы зданий, костров, витрин и т.п.)
-      let list = this._lightCache;
-      if (!list) {
-        const known = new Set(this.lights.map((l) => l.light));
-        list = this.lights.slice();
-        this.scene.traverse((o) => {
-          if (o.isPointLight && !known.has(o)) list.push({ light: o, extra: true });
-        });
-        this._lightCache = list;
-      }
-      for (const l of list) {
-        l._d2 = l.light.position.distanceToSquared(playerPos);
-      }
-      list.sort((a, b) => a._d2 - b._d2);
-
-      for (let i = 0; i < list.length; i++) {
-        const l = list[i];
-        const want = i < budget;
-        if (l._active === want) continue;
-        l._active = want;
-        // Гасим полностью: visible=false убирает лампу из расчёта шейдера
-        l.light.visible = want;
-      }
-    }
+    /**
+     * Отбор источников света ОТКЛЮЧЁН НАВСЕГДА.
+     *
+     * Раньше здесь гасились дальние лампы ради производительности, но
+     * переключение light.visible заставляет Three.js пересобирать ВСЕ
+     * шейдеры сцены — отсюда были рывки и «скачки» картинки на ходу.
+     *
+     * Вместо этого количество ламп ограничено на этапе постройки мира
+     * (см. _lamp и вызовы PointLight), а игрок регулирует нагрузку
+     * пресетом качества в настройках. Ничего не переключается в рантайме.
+     */
+    _cullLights() { /* намеренно пусто */ }
 
     /** Определение локации по позиции */
     locationAt(pos) {

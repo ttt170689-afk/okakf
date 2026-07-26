@@ -402,6 +402,12 @@
         this.savedPos = this.game.player.pos.clone();
         this.game.notify('📷 Фото-режим: F2 — снимок, стрелки — фильтр, P — выход', 'info');
       } else {
+        // Возвращаем базовые параметры рендера
+        const r = this.game.renderer;
+        r.toneMapping = THREE.ACESFilmicToneMapping;
+        r.toneMappingExposure = FF.CONFIG.render.exposure;
+        this.filter = 'none';
+        this.filterIndex = 0;
         this.game.notify('📷 Выход из фото-режима', 'info');
       }
       return this.active;
@@ -415,6 +421,8 @@
     }
 
     _applyFilter() {
+      // Фильтры работают ТОЛЬКО в фото-режиме и не трогают обычную игру
+      if (!this.active) return;
       const r = this.game.renderer;
       const presets = {
         none: { exposure: 1.06, tone: THREE.ACESFilmicToneMapping },
