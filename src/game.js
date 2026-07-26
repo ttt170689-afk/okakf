@@ -84,6 +84,12 @@
       this.fpsSamples = [];
       this.saveTimer = 0;
 
+      // Тени только у крупных объектов — иначе 2700+ мешей рисуются дважды
+      const sh = this.world.optimizeShadows(1.4);
+      // Слияние статичной геометрии: ~2900 вызовов отрисовки → несколько десятков
+      const mg = this.world.mergeStaticGeometry();
+      console.log(`[opt] тени: ${sh.kept} (снято ${sh.dropped}) · слито ${mg.removed} мешей в ${mg.merged} батчей`);
+
       this._resetDailyStock();
       this._loadSettings();
       this._bindInput();

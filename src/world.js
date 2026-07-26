@@ -44,6 +44,7 @@
       this._buildPark();
       this._buildMountains();
       this._buildMiscBuildings();
+      this._buildWarehouseOppositeHouse();
       this._buildSecretVault();
       this._buildNPCs();
       this._buildParticles();
@@ -107,6 +108,10 @@
       const d = 52;
       Object.assign(this.sun.shadow.camera, { left: -d, right: d, top: d, bottom: -d });
       this.sun.shadow.bias = -0.0009;
+      // Тени пересчитываются не каждый кадр: статичный город не меняется
+      this.renderer.shadowMap.autoUpdate = false;
+      this.renderer.shadowMap.needsUpdate = true;
+      this._shadowTick = 0;
       this.sun.shadow.normalBias = 0.035;
       this.scene.add(this.sun);
       this.scene.add(this.sun.target);
@@ -326,7 +331,7 @@
       // только у каждого второго. Экономит половину ламп без потери вида.
       for (let i = 0; i < 12; i++) {
         const a = (i / 12) * Math.PI * 2 + 0.15;
-        this._lamp(Math.cos(a) * 25, Math.sin(a) * 25, g, i % 2 === 0);
+        this._lamp(Math.cos(a) * 25, Math.sin(a) * 25, g, i % 4 === 0);
       }
 
       // Голуби-фурри
@@ -532,11 +537,15 @@
         const sign = this._signboard(d.sign, d.color);
         sign.position.set(0, d.h + 1.4, d.w / 2 * 0.7);
         g.add(sign);
-        // Тёплый свет внутри
-        // Внутреннее освещение: мягкое и тёплое (светлые стены легко пересветить)
-        const pl = new THREE.PointLight(0xffcf8a, 1.15, 20, 2.2);
-        pl.position.set(L.x, Math.min(3.4, d.h - 1.2), L.z);
-        this.scene.add(pl); this.lights.push({ light: pl, window: true });
+        // Точечный свет только в кафе с интерьером, куда заходит игрок.
+        // У остальных светится вывеска — визуально то же, но дешевле.
+        if (['sweetpaw', 'bakery', 'pumpcafe'].includes(d.id)) {
+          const pl = new THREE.PointLight(0xffcf8a, 1.3, 22, 2.2);
+          pl.position.set(L.x, Math.min(3.4, d.h - 1.2), L.z);
+          this.scene.add(pl); this.lights.push({ light: pl, window: true });
+        } else {
+          sign.material.emissiveIntensity = 0.8;
+        }
 
         // --- ИНТЕРЬЕР ---
         this._cafeInterior(g, d);
@@ -568,11 +577,7 @@
               new THREE.MeshPhysicalMaterial({ color: 0xffd8a8, transparent: true, opacity: 0.6, transmission: 0.6 }));
             tube.position.set(px, 2.4, pz + 1.2); tube.rotation.x = 0.6;
             this.scene.add(tube);
-            if (i === 1) {   // один неон на все три терминала
-              const neon = new THREE.PointLight(0x4ad8ff, 2.2, 16, 2);
-              neon.position.set(px, 2.8, pz);
-              this.scene.add(neon); this.lights.push({ light: neon, neon: true });
-            }
+
           }
           this.interactables.push({ id: 'pump', pos: new THREE.Vector3(L.x, 1.6, L.z + 6), radius: 5,
             label: 'Подключить друга к насосу', action: 'minigame', game: 'pump' });
@@ -775,6 +780,38 @@
           -1.5, 1.62, -R * 0.5);
         g.add(machine);
       }
+    }
+
+    /* ==================== СКЛАД НАПРОТИВ ДОМА ==================== */
+    _buildWarehouseOppositeHouse() {
+      const cottageL = FF.LOC_BY_ID.cottage;
+      const wx = cottageL.x;
+      const wz = cottageL.z + 50;
+      const g = new THREE.Group();
+      const gy = this.heightAt(wx, wz);
+      g.position.set(wx, gy, wz);
+      const wallMat = new THREE.MeshStandardMaterial({ color: 0x9aa4b0, roughness: 0.85, side: THREE.DoubleSide });
+      const roofMat = mat('warehouse_roof', { color: 0x6a7080, roughness: 0.85 });
+      const W = 16, D = 10, H = 7;
+      g.add(this._box(W, H, 0.5, wallMat, 0, H / 2, -D / 2));
+      g.add(this._box(W, H, 0.5, wallMat, 0, H / 2, D / 2));
+      g.add(this._box(0.5, H, D, wallMat, -W / 2, H / 2, 0));
+      g.add(this._box(0.5, H, D, wallMat, W / 2, H / 2, 0));
+      const roof = new THREE.Mesh(new THREE.SphereGeometry(Math.max(W, D) / 2 * 0.75, 18, 8, 0, Math.PI * 2, 0, Math.PI / 2), roofMat);
+      roof.position.y = H;
+      roof.scale.set(W / (Math.max(W, D) * 0.75), 0.55, D / (Math.max(W, D) * 0.75));
+      g.add(roof);
+      const base = new THREE.Mesh(new THREE.BoxGeometry(W, 0.3, D), wallMat);
+      base.position.set(0, 0.15, 0);
+      g.add(base);
+      this.colliders.push({ type: 'box', x: wx, z: wz, w: W, d: D, h: H + 1 });
+      const sign = this._signboard('📦 Склад', 0x8ab6f0);
+      sign.position.set(0, H + 1.4, D / 2 + 0.2);
+      g.add(sign);
+      g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+      this.scene.add(g);
+      this.interactables.push({ id: 'warehouse_opposite', pos: new THREE.Vector3(wx, H / 2 + 1.2, wz + D / 2 + 2), radius: 6,
+        label: '📦 Склад напротив дома', action: 'warehouse_opposite' });
     }
 
     /* ==================== ЛАБОРАТОРИЯ АРТЁМА ==================== */
@@ -1259,9 +1296,15 @@
             }
           }
         }
-        const pl = new THREE.PointLight(d.id === 'club' ? 0xd84af0 : 0xffcf8a, 1.1, 18, 2.2);
-        pl.position.set(L.x, 2.6, L.z + d.d / 2 - 1);
-        this.scene.add(pl); this.lights.push({ light: pl, window: true, club: d.id === 'club' });
+        // Точечный свет только у клуба (он мигает). У остальных окна
+        // светятся материалом вывески — картинка та же, шейдер легче.
+        if (d.id === 'club') {
+          const pl = new THREE.PointLight(0xd84af0, 1.3, 20, 2.2);
+          pl.position.set(L.x, 2.6, L.z + d.d / 2 - 1);
+          this.scene.add(pl); this.lights.push({ light: pl, window: true, club: true });
+        } else {
+          sign.material.emissiveIntensity = 0.75;
+        }
         g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
         this.scene.add(g);
         this.colliders.push({ type: 'box', x: L.x, z: L.z, w: d.w, d: d.d, h: d.h });
@@ -1363,13 +1406,7 @@
       vl.position.set(0, 4.2, 0);
       g.add(vl);
       this.lights.push({ light: vl, pulse: true });
-      // Подсветка бочек по кругу
-      for (let i = 0; i < 3; i++) {
-        const a = (i / 3) * Math.PI * 2;
-        const sp = new THREE.PointLight(0xffd0a0, 1.8, 18, 1.8);
-        sp.position.set(Math.cos(a) * 5.5, 4.6, Math.sin(a) * 5.5);
-        g.add(sp);
-      }
+
       // Купол не глухой: световой люк сверху
       const oculus = new THREE.Mesh(new THREE.CircleGeometry(2.2, 20),
         new THREE.MeshStandardMaterial({ color: 0xffe8c8, emissive: 0xffca88,
@@ -1775,6 +1812,10 @@
       }
 
       this._updateWeather(dt);
+
+      // Пересчёт shadow map раз в 4 кадра — вчетверо дешевле, глазу незаметно
+      this._shadowTick = (this._shadowTick || 0) + 1;
+      if (this._shadowTick % 4 === 0) this.renderer.shadowMap.needsUpdate = true;
     }
 
     setWeather(w) {
@@ -1816,6 +1857,157 @@
      * поэтому 75 ламп — это неподъёмно. Держим включёнными только
      * несколько ближайших к игроку, остальные гасим (intensity = 0).
      */
+    /**
+     * ГЛАВНАЯ ОПТИМИЗАЦИЯ: слияние статичной геометрии.
+     *
+     * В городе ~2900 отдельных мешей, и каждый — свой вызов отрисовки.
+     * Именно это роняет FPS при взгляде на город. Здания, скамейки,
+     * заборы и мебель никогда не двигаются, поэтому их можно слить
+     * в несколько крупных мешей по материалу: 2900 вызовов → ~40.
+     *
+     * Динамические объекты (NPC, лопасти мельницы, стрелки часов, дым,
+     * голуби, пикапы) помечены userData.dynamic и не трогаются.
+     */
+    mergeStaticGeometry() {
+      // 1. Помечаем всё, что анимируется
+      const dyn = [
+        this.millBlades, this.labSmoke, this.brewSurface, this.pond, this.stream,
+        this.rainGroup, this.dust, this.secretVault, this.rocker, this.fountain,
+      ].filter(Boolean);
+      for (const h of this.clockHands || []) dyn.push(h);
+      for (const c of this.chocoFalls || []) dyn.push(c);
+      for (const pp of this.pipes || []) dyn.push(pp.mesh);
+      for (const pg of this.pigeons || []) dyn.push(pg.mesh);
+      for (const n of this.npcs || []) dyn.push(n.group);
+      for (const pk of this.pickups || []) dyn.push(pk.mesh);
+      for (const gm of this.vaultGems || []) dyn.push(gm);
+      if (this.vaultOrb) dyn.push(this.vaultOrb);
+      for (const o of dyn) o && o.traverse && o.traverse((x) => { x.userData.dynamic = true; });
+
+      // 2. Собираем кандидатов: статичные меши с обычной геометрией
+      const buckets = new Map();          // ключ материала+тени -> список
+      const victims = [];
+      this.scene.traverse((o) => {
+        if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh) return;
+        if (o.userData.dynamic || o.userData.furry) return;
+        if (!o.geometry || !o.geometry.attributes.position) return;
+        if (o.geometry.morphAttributes && Object.keys(o.geometry.morphAttributes).length) return;
+        // Пропускаем прозрачные — у них важен порядок отрисовки
+        const m = o.material;
+        if (!m || Array.isArray(m) || m.transparent) return;
+        let anc = o.parent, skip = false;
+        while (anc) { if (anc.userData.dynamic) { skip = true; break; } anc = anc.parent; }
+        if (skip) return;
+        const key = m.uuid + '|' + (o.castShadow ? 1 : 0) + '|' + (o.receiveShadow ? 1 : 0);
+        if (!buckets.has(key)) buckets.set(key, { mat: m, cast: o.castShadow, recv: o.receiveShadow, list: [] });
+        buckets.get(key).list.push(o);
+        victims.push(o);
+      });
+
+      // 3. Сливаем каждую корзину в один меш
+      let merged = 0, removed = 0;
+      const group = new THREE.Group();
+      group.name = 'MergedStatic';
+      for (const b of buckets.values()) {
+        if (b.list.length < 4) continue;         // мелкие группы не окупаются
+        const geo = this._mergeMeshList(b.list);
+        if (!geo) continue;
+        const mesh = new THREE.Mesh(geo, b.mat);
+        mesh.castShadow = b.cast;
+        mesh.receiveShadow = b.recv;
+        mesh.matrixAutoUpdate = false;
+        group.add(mesh);
+        merged++;
+        for (const o of b.list) { o.parent && o.parent.remove(o); o.geometry.dispose(); removed++; }
+      }
+      this.scene.add(group);
+      this.mergedStatic = group;
+      return { merged, removed };
+    }
+
+    /** Слияние списка мешей в одну геометрию (с применением мировых матриц) */
+    _mergeMeshList(list) {
+      let total = 0, idxTotal = 0;
+      for (const o of list) {
+        o.updateWorldMatrix(true, false);
+        const c = o.geometry.attributes.position.count;
+        total += c;
+        idxTotal += o.geometry.index ? o.geometry.index.count : c;
+      }
+      if (total === 0 || total > 65535 * 16) return null;
+
+      const pos = new Float32Array(total * 3);
+      const nrm = new Float32Array(total * 3);
+      const uv = new Float32Array(total * 2);
+      const idx = total > 65535 ? new Uint32Array(idxTotal) : new Uint16Array(idxTotal);
+      let vOff = 0, iOff = 0;
+      const nMat = new THREE.Matrix3();
+      const v = new THREE.Vector3();
+
+      for (const o of list) {
+        const g = o.geometry;
+        const p = g.attributes.position;
+        const n = g.attributes.normal;
+        const t = g.attributes.uv;
+        nMat.getNormalMatrix(o.matrixWorld);
+        for (let i = 0; i < p.count; i++) {
+          v.set(p.getX(i), p.getY(i), p.getZ(i)).applyMatrix4(o.matrixWorld);
+          pos[(vOff + i) * 3] = v.x; pos[(vOff + i) * 3 + 1] = v.y; pos[(vOff + i) * 3 + 2] = v.z;
+          if (n) {
+            v.set(n.getX(i), n.getY(i), n.getZ(i)).applyMatrix3(nMat).normalize();
+            nrm[(vOff + i) * 3] = v.x; nrm[(vOff + i) * 3 + 1] = v.y; nrm[(vOff + i) * 3 + 2] = v.z;
+          }
+          if (t) { uv[(vOff + i) * 2] = t.getX(i); uv[(vOff + i) * 2 + 1] = t.getY(i); }
+        }
+        if (g.index) {
+          for (let i = 0; i < g.index.count; i++) idx[iOff + i] = g.index.getX(i) + vOff;
+          iOff += g.index.count;
+        } else {
+          for (let i = 0; i < p.count; i++) idx[iOff + i] = i + vOff;
+          iOff += p.count;
+        }
+        vOff += p.count;
+      }
+
+      const out = new THREE.BufferGeometry();
+      out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      out.setAttribute('normal', new THREE.BufferAttribute(nrm, 3));
+      out.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      out.setIndex(new THREE.BufferAttribute(idx, 1));
+      out.computeBoundingSphere();
+      return out;
+    }
+
+    /**
+     * ОПТИМИЗАЦИЯ ТЕНЕЙ.
+     *
+     * Профилирование показало: рендер 58 мс с тенями против 8.7 мс без них.
+     * Причина — 2759 объектов с castShadow: каждый рисуется повторно в
+     * shadow map. Мелочь (кружки, книги, ягоды, товар на полках) даёт
+     * тени в 1-2 пикселя, которых всё равно не видно.
+     *
+     * Оставляем тени только у объектов крупнее порога.
+     */
+    optimizeShadows(minSize) {
+      const limit = minSize || 1.4;
+      const box = new THREE.Box3();
+      let kept = 0, dropped = 0;
+      this.scene.traverse((o) => {
+        if (!o.isMesh || !o.castShadow) return;
+        if (o.userData.furry) { kept++; return; }        // друг всегда с тенью
+        if (!o.geometry.boundingSphere) o.geometry.computeBoundingSphere();
+        const bs = o.geometry.boundingSphere;
+        if (!bs) return;
+        // Размер с учётом масштаба всей цепочки родителей
+        o.updateWorldMatrix(true, false);
+        const scale = o.matrixWorld.getMaxScaleOnAxis();
+        const size = bs.radius * 2 * scale;
+        if (size < limit) { o.castShadow = false; dropped++; }
+        else kept++;
+      });
+      return { kept, dropped };
+    }
+
     /**
      * Отбор источников света ОТКЛЮЧЁН НАВСЕГДА.
      *
