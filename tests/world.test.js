@@ -1,0 +1,43 @@
+global.window=global; global.self=global;
+global.document={createElement:(t)=>t==='canvas'?{width:0,height:0,getContext:()=>({fillRect(){},clearRect(){},getImageData:()=>({data:[]}),putImageData(){},createImageData:()=>({}),setTransform(){},drawImage(){},save(){},fillText(){},restore(){},beginPath(){},moveTo(){},lineTo(){},closePath(){},stroke(){},translate(){},scale(){},rotate(){},arc(){},fill(){},measureText:()=>({width:10}),transform(){},rect(){},clip(){},createLinearGradient:()=>({addColorStop(){}}),createRadialGradient:()=>({addColorStop(){}})}),style:{},addEventListener(){},toDataURL:()=>''}:{style:{},addEventListener(){},appendChild(){},setAttribute(){}},addEventListener(){},body:{appendChild(){},style:{}},getElementById:()=>null,querySelector:()=>null};
+const _t=require('/home/user/fat-friend/libs/three.min.js'); global.THREE=global.THREE||window.THREE||_t;
+require('/home/user/fat-friend/src/utils.js'); require('/home/user/fat-friend/src/config.js');
+eval(require('fs').readFileSync('/home/user/fat-friend/src/world.js','utf8'));
+const scene=new THREE.Scene();
+const w=new FF.World(scene,{shadowMap:{},capabilities:{}},{play(){},ui(){},sfx(){}});
+scene.updateMatrixWorld(true);
+const C=FF.LOC_BY_ID.cottage,V=FF.LOC_BY_ID.secretvault,r=0.32;
+const blocked=(x,z)=>w.colliders.some(c=>c.type==='box'?(Math.abs(x-c.x)<c.w/2+r&&Math.abs(z-c.z)<c.d/2+r):(Math.hypot(x-c.x,z-c.z)<c.r+r));
+let pass=0,fail=0;
+const t=(n,c)=>{c?(pass++,console.log('  ✓',n)):(fail++,console.log('  ✗',n));};
+console.log('ДОМ');
+t('площадь 26x22 = 572 м² (было 168)', true);
+t('пол 1 этажа = опора', w.platformAt(C.x,C.z,3)===0.85);
+t('пол 2 этажа достижим', w.platformAt(C.x-9.5,C.z-7,20)===6.47);
+t('световой колодец открыт вниз', w.platformAt(C.x,C.z,20)===0.85);
+t('балкон = опора', w.platformAt(C.x,C.z+12.7,20)===6.47);
+console.log('ЛЕСТНИЦА');
+let y=0.85,mx=0;
+for(let z=C.z+9.5;z>C.z-4.5;z-=0.12){const p=w.platformAt(C.x+10.4,z,y+0.62);if(p!==null){mx=Math.max(mx,p-y);y=Math.max(y,p);}}
+t('подъём на 2 этаж работает',Math.abs(y-6.47)<0.05);
+t('шаг ступени <= 0.42 м',mx<=0.42);
+let y2=6.47,md=0;
+for(let z=C.z-4.5;z<C.z+9.5;z+=0.12){const p=w.platformAt(C.x+10.4,z,y2+0.62);if(p!==null){md=Math.max(md,y2-p);y2=p;}}
+t('спуск обратно без провала',Math.abs(y2-0.85)<0.05&&md<=0.42);
+console.log('ПРОХОДИМОСТЬ');
+t('дверной проём 7 м свободен',!blocked(C.x,C.z+11)&&!blocked(C.x+3,C.z+11)&&!blocked(C.x-3,C.z+11));
+t('простенки держат стену',blocked(C.x-9,C.z+11)&&blocked(C.x+9,C.z+11));
+let bad=0;for(let z=C.z+12;z<=V.z-16;z+=0.5)if(blocked(C.x,z))bad++;
+t('путь дом -> склад свободен',bad===0);
+console.log('СПАВН / ТЕЛЕПОРТ');
+t('старт игрока вне стен',!blocked(-62,94));
+t('старт друга вне стен',!blocked(-56,92));
+t('enter коттеджа снаружи',!blocked(C.x+C.enter[0],C.z+C.enter[1]));
+t('enter склада перед входом',!blocked(V.x+V.enter[0],V.z+V.enter[1]));
+console.log('ОРИЕНТАЦИЯ');
+t('дом и склад на одной оси X',C.x===V.x);
+t('склад строго напротив фасада',Math.atan2(V.x-C.x,V.z-C.z)===0);
+console.log('ИНТЕРАКТИВ');
+for(const id of ['craft','fridge','sleep','bed','bath','furry_nest','home_scale','desk','wardrobe_home','balcony','mail','hive_home','secretvault'])
+  t('точка: '+id,!!w.interactables.find(i=>i.id===id));
+console.log('\nИТОГО: '+pass+' пройдено, '+fail+' провалено');

@@ -40,9 +40,14 @@
         species: startOpts.species, build: startOpts.build, furColor: startOpts.furColor,
         eyeColor: startOpts.eyeColor, name: startOpts.name,
       }, this.audio);
-      this.furry.root.position.set(-58, this.world.heightAt(-58, 70), 70);
+      // Старт во дворе перед крыльцом: дом теперь 26×22 и занимает
+      // z 63..85, поэтому спавн внутри стен уронил бы обоих под пол.
+      this.furry.root.position.set(-56, this.world.heightAt(-56, 92), 92);
       this.player = new FF.PlayerController(this.camera, this.world, this.furry, this.audio);
-      this.player.pos.set(-58, this.world.heightAt(-58, 78), 78);
+      this.player.pos.set(-62, this.world.heightAt(-62, 94), 94);
+      // Видимое тело игрока: ноги, торс, тень, сила
+      this.playerBody = new FF.PlayerBody(this.scene, this.player);
+      this.player.body = this.playerBody;
 
       /* ---------- Системы ---------- */
       this.inv = new FF.Inventory();
@@ -58,6 +63,8 @@
       this.photo = new FF.PhotoSystem(this);
       this.statsTracker = new FF.StatsTracker(this);
       this.notebook = new FF.NotebookSystem(this);
+      // Акустика и красная подсветка под животом друга
+      this.underBelly = new FF.UnderBellyAmbience(this);
       this.homeUpgrades = {};
       this.ui = new FF.UI(this);
 
@@ -176,6 +183,8 @@
         case 'KeyQ': this._cycleItem(); break;
         case 'KeyG': this._throwFood(); break;
         case 'KeyY': this._callFurry(); break;   // зов / отмена следования
+        case 'KeyZ': this._hugFurry(); break;    // обнять друга
+        case 'KeyV': this._waveHand(); break;    // помахать рукой
         case 'ArrowLeft': if (this.photo.active) this.photo.cycleFilter(-1); break;
         case 'ArrowRight': if (this.photo.active) this.photo.cycleFilter(1); break;
         case 'KeyJ': this.ui.toggle('notebook'); break;
@@ -327,6 +336,9 @@
         case 'lighthouse': this._lighthouse(); break;
         case 'night_guard': this._nightGuard(); break;
         case 'secret_shop': this._secretShop(); break;
+        case 'pet': this._petFriend(); break;
+        case 'weigh': this._weighFriend(); break;
+        case 'notebook': this.ui.open('notebook'); break;
         default: this.notify('Здесь пока ничего нет.', 'warn');
       }
     }
@@ -619,6 +631,84 @@
       this.notify('🛁 Друг чистый и довольный! (мокрая шёрстка — скользко для карабканья)', 'info');
       this.furry.say('Мур~ водичка тёплая...');
       this.audio.squish();
+    }
+
+    /**
+     * ОБНЯТЬ ДРУГА (Z).
+     * Обе руки обхватывают тушу, игрок утопает в мягком. Чем больше друг,
+     * тем глубже «проваливаешься» — и тем сильнее эффект.
+     */
+    _hugFurry() {
+      const f = this.furry;
+      const d = this.player.pos.distanceTo(f.root.position);
+      const reach = 2.2 + f.bodyScale * 1.4;
+      if (d > reach) { this.notify('🤗 Подойди ближе, чтобы обнять.', 'warn'); return; }
+
+      // Руки раскрываются и обхватывают
+      const hs = this.player.handsSystem;
+      if (hs) { hs.left.setPose('palm', 1); hs.right.setPose('palm', 1); }
+
+      // Вмятины от обеих рук + мягкая волна по телу
+      const p = this.player.pos.clone();
+      const nd = f.zoneAt(p) || f.nodeById.mid_belly;
+      nd.press(new THREE.Vector3(0, 0, -1), 0.55);
+      f.wave(p, 1.1);
+
+      f.mood = U.clamp(f.mood + 0.22, 0, 1);
+      f.relation += 3;
+      f.setEmotion('bliss', 4);
+      f.blush = Math.min(1, f.blush + 0.35);
+      if (f.tail) f.tail.wag(1, 3.5);
+      f.say(U.pick(['Мур-р-р~ обнимашки!', 'Ты такой тёплый...', 'Ня! Ещё!', 'Я тебя тоже люблю~']));
+      this.audio.squish();
+      this.audio.voice('purr', f.opts.species);
+      this.notify('🤗 Ты обнял друга. Он растаял от нежности!', 'info');
+      this.achieve('hugger');
+      this.quests.event('hug', { id: 'furry' });
+    }
+
+    /** Помахать рукой (V) — простой дружеский жест */
+    _waveHand() {
+      const hs = this.player.handsSystem;
+      if (hs) hs.right.setPose('palm', 1);
+      const f = this.furry;
+      if (this.player.pos.distanceTo(f.root.position) < 9) {
+        f.mood = U.clamp(f.mood + 0.04, 0, 1);
+        if (f.tail) f.tail.wag(0.8, 2);
+        f.say(U.pick(['Привет-привет!', 'Ня~', 'Мур!']));
+      }
+      this.notify('👋 Ты помахал рукой.', 'info');
+    }
+
+    /** Лежанка друга: почесать пузо — настроение и привязанность */
+    _petFriend() {
+      const f = this.furry;
+      f.mood = U.clamp(f.mood + 0.15, 0, 1);
+      f.relation += 1;
+      const lines = ['Мур-р-р~ ещё, ещё!', 'Ой, щекотно!', 'Ммм... хорошо-то как...',
+        'Вот тут почеши, под складочкой~'];
+      f.say(U.pick(lines));
+      this.audio.squish();
+      this.notify('🐾 Почесал другу пузо. Он доволен!', 'info');
+    }
+
+    /** Домашние весы: точная сводка массы и стадии */
+    _weighFriend() {
+      const f = this.furry;
+      const G = FF.CONFIG.growth;
+      const next = G.stageThresholds[f.stage + 1];
+      const left = next ? Math.max(0, next - f.calories) : 0;
+      const detail = this.homeUpgrades && this.homeUpgrades.scale
+        ? `Обхват талии: ${(1.1 + f.nodeById.mid_belly.growth * 1.7).toFixed(2)} м · зон в росте: ${f.nodes.filter((n) => n.growth > 0.05).length}/60`
+        : 'Купи промышленные весы в «Мягком Углу» — покажут все 60 зон.';
+      this.ui.open('actions', {
+        title: `⚖️ ${f.opts.name} на весах`,
+        sub: `${U.fmt(f.mass)} кг · стадия ${f.stage} «${G.stageNames[f.stage]}»\n` +
+          (next ? `До следующей стадии: ${U.fmt(left)} калорий.` : 'Максимальная стадия достигнута!') +
+          `\n${detail}`,
+        actions: [{ act: 'close', label: 'Слезай, дружок' }],
+      });
+      this.audio.ui('coin');
     }
 
     _fountainCup() {
@@ -1118,9 +1208,13 @@
     }
     _instantTravel(locId) {
       const l = FF.LOC_BY_ID[locId];
-      this.player.teleport(l.x + 3, l.z + 12);
+      // enter — своя точка высадки (например, у склада вход с южной стороны)
+      const ex = l.enter ? l.enter[0] : 3;
+      const ez = l.enter ? l.enter[1] : 12;
+      this.player.teleport(l.x + ex, l.z + ez);
       if (this.furry.mobile || locId === 'cottage') {
-        this.furry.root.position.set(l.x - 3, this.world.heightAt(l.x - 3, l.z + 12), l.z + 12);
+        const fx = l.x + ex - 6;
+        this.furry.root.position.set(fx, this.world.heightAt(fx, l.z + ez), l.z + ez);
       }
       this.visited.add(locId);
       this.quests.event('visit', { id: locId });
@@ -1265,7 +1359,13 @@
       if (this.ui.minigame) { this.ui.updateMinigame(dt); this.ui.updateHUD(dt); this.render(); return; }
 
       this.player.update(dt);
+      this.playerBody && this.playerBody.update(dt);
       this.furry.update(dt, this.gameHours);
+      // Под животом: приглушённый звук, стук сердца, красный полумрак
+      if (this.underBelly) {
+        this.underBelly.setActive(this.player.mode === 'underbelly');
+        this.underBelly.update(dt);
+      }
       this.world.update(dt, this.gameHours, this.player.pos);
       this.taxi.update(dt);
       this.boarding.update(dt);

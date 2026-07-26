@@ -403,8 +403,12 @@
       this.state = 'idle';
       this.active = false;
       this.game.player.mode = 'walk';
-      this.game.player.teleport(loc.x + 4, loc.z + 10);
-      this.game.furry.root.position.set(loc.x - 4, this.game.world.heightAt(loc.x - 4, loc.z + 10), loc.z + 10);
+      // Точка высадки: у крупных построек (коттедж, склад) своя, иначе
+      // такси выгружает пассажиров прямо внутрь стен.
+      const ax = loc.enter ? loc.x + loc.enter[0] + 4 : loc.x + 4;
+      const az = loc.enter ? loc.z + loc.enter[1] : loc.z + 10;
+      this.game.player.teleport(ax, az);
+      this.game.furry.root.position.set(ax - 8, this.game.world.heightAt(ax - 8, az), az);
       this.game.notify(`📍 Прибыли: ${loc.name}`, 'info');
       this.game.quests.event('visit', { id: loc.id });
       this.game.visited.add(loc.id);

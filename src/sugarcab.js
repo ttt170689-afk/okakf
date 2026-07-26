@@ -755,8 +755,11 @@
       this.resting = false;
       g.audio.setVolume('music', FF.CONFIG.audio.musicVolume);
       g.player.mode = 'walk';
-      g.player.teleport(loc.x + 4, loc.z + 11);
-      g.furry.root.position.set(loc.x - 3, g.world.heightAt(loc.x - 3, loc.z + 11), loc.z + 11);
+      // У построек со своей точкой входа высаживаемся снаружи, а не в стене
+      const dx = loc.enter ? loc.x + loc.enter[0] + 4 : loc.x + 4;
+      const dz = loc.enter ? loc.z + loc.enter[1] : loc.z + 11;
+      g.player.teleport(dx, dz);
+      g.furry.root.position.set(dx - 7, g.world.heightAt(dx - 7, dz), dz);
       g.furry.root.rotation.x = 0;
       // Возвращаем нормальные габариты — плоть распрямляется
       this.cabinSquash = 1;

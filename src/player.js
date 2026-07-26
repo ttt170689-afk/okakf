@@ -180,8 +180,12 @@
       if (this.keys.KeyA) wish.sub(right);
 
       this.crouch = !!this.keys.ControlLeft;
+      /* Ползание (C): ниже приседа, пускает под живот друга и под мебель.
+       * Под животом включается принудительно — там иначе не пролезть. */
+      this.crawling = !!this.keys.KeyX || (this.mode === 'underbelly' && this.crouch);
       const running = this.keys.ShiftLeft && !this.crouch && this.stamina > 1;
-      let speed = this.crouch ? C.walkSpeed * 0.45 : running ? C.runSpeed : C.walkSpeed;
+      let speed = this.crawling ? C.walkSpeed * 0.28
+        : this.crouch ? C.walkSpeed * 0.45 : running ? C.runSpeed : C.walkSpeed;
       if (this.mode === 'onbelly') speed *= 0.55;   // по колышущемуся животу идти сложно
       if (this.mode === 'underbelly') speed *= 0.6;
       // Погружение в мягкую плоть замедляет: чем глубже утонул, тем труднее идти
@@ -323,6 +327,17 @@
      */
     _groundHeight(x, z) {
       let y = this.world.heightAt(x, z);
+
+      // Полы этажей, ступени и балкон коттеджа — стоять можно и на них.
+      // Берём платформу не выше пояса: так лестница «подхватывает» шаг за шагом,
+      // а под перекрытием второго этажа можно спокойно ходить.
+      // Порог 0.62 м — чуть выше ступени (0.4 м): на лестницу шагаем плавно,
+      // но запрыгнуть с пола сразу на второй этаж нельзя.
+      if (this.world.platformAt) {
+        const p = this.world.platformAt(x, z, this.pos.y + 0.62);
+        if (p !== null && p > y) y = p;
+      }
+
       const f = this.furry;
       if (!f.physics) return y;
 
@@ -500,7 +515,8 @@
 
     _updateCamera(dt) {
       const C = FF.CONFIG.player;
-      const h = this.crouch ? C.crouchHeight : C.eyeHeight;
+      // Ползком глаза почти у земли — так и пролезаем под живот
+      const h = this.crawling ? C.crawlHeight : this.crouch ? C.crouchHeight : C.eyeHeight;
       this.height = U.damp(this.height, h, 12, dt);
       const bob = this.onGround ? Math.sin(this.headBob * 2) * 0.035 * (this.keys.ShiftLeft ? 1.4 : 1) : 0;
       const roll = Math.sin(this.headBob) * 0.012;
@@ -522,7 +538,14 @@
 
     /** Телепорт (быстрое перемещение, такси) */
     teleport(x, z) {
-      this.pos.set(x, this.world.heightAt(x, z) + 0.2, z);
+      // Учитываем пол дома/крыльцо: иначе высадка внутри коттеджа
+      // роняет игрока под приподнятое перекрытие первого этажа.
+      let y = this.world.heightAt(x, z);
+      if (this.world.platformAt) {
+        const p = this.world.platformAt(x, z, y + 3);
+        if (p !== null && p > y) y = p;
+      }
+      this.pos.set(x, y + 0.2, z);
       this.vel.set(0, 0, 0);
       this.hands.forEach((h) => (h.grip = null));
       this.climbing = false; this.mode = 'walk';

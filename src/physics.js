@@ -424,11 +424,35 @@
         a.node.impulse(_tmpV1.set(-nx, -ny * 0.55, -nz), impA);
         b.node.impulse(_tmpV1.set(nx, ny * 0.55, nz), impB);
 
+        /* --- Давление контакта ---
+         * Зона знает, что её прижимает соседняя плоть. Это питает
+         * термомодель (нагрев/пот) и сохранение объёма в SoftNode. */
+        a.node.contactPress = Math.min(1, a.node.contactPress + overlap * 2.2);
+        b.node.contactPress = Math.min(1, b.node.contactPress + overlap * 2.2);
+
+        /* --- Volume preservation ---
+         * Сжали плоть в точке контакта — объём уходит вбок, а не исчезает.
+         * Направление выпучивания берём НЕ произвольным перпендикуляром
+         * (он давал разный знак слева и справа и кособочил тело), а строго
+         * наружу от продольной оси тела: обе зоны раздаются симметрично. */
+        const vp = FF.CONFIG.soft.volumePreserve;
+        if (vp > 0 && overlap > 0.04) {
+          const bulge = Math.min(0.12, overlap * vp * 0.35);
+          // Радиальное направление в горизонтальной плоскости для каждой зоны
+          const ax = a.center.x, az = a.center.z;
+          const bx = b.center.x, bz = b.center.z;
+          const al = Math.hypot(ax, az) || 1, bl = Math.hypot(bx, bz) || 1;
+          a.node.impulse(_tmpV1.set(ax / al, 0.12, az / al), bulge);
+          b.node.impulse(_tmpV1.set(bx / bl, 0.12, bz / bl), bulge);
+        }
+
         // Трение соприкасающихся поверхностей: нагрев + звук
         const relVel = Math.abs(a.node.vel.y - b.node.vel.y) + Math.abs(a.node.vel.x - b.node.vel.x);
         if (relVel > 0.35) {
-          a.node.heat = Math.min(1, a.node.heat + dt * 0.4);
-          b.node.heat = Math.min(1, b.node.heat + dt * 0.4);
+          // Нагрев пропорционален скорости трения и глубине контакта
+          const rub = dt * 0.4 * (0.5 + relVel) * (0.4 + overlap);
+          a.node.heat = Math.min(1, a.node.heat + rub);
+          b.node.heat = Math.min(1, b.node.heat + rub);
           // Звук трения бёдер/складок — редко, чтобы не спамить
           if ((a.zone.friction || b.zone.friction) && Math.random() < dt * 1.6) {
             this.furry.audio && this.furry.audio.squish();
@@ -575,17 +599,17 @@
 
       let top = -Infinity, zone = null;
       for (const c of this.colliders) {
-        if (!c.standable || c.node.growth < 0.03) continue;
+        if (!c.standable || c.node.growth < 0.05) continue;
         const dx = (local.x - c.center.x) / c.radii.x;
         const dz = (local.z - c.center.z) / c.radii.z;
         const horiz = dx * dx + dz * dz;
         if (horiz >= 1) continue;
-        // Более плавная высота верхней точки эллипсоида с мягким переходом
-        const y = c.center.y + c.radii.y * Math.sqrt(Math.max(0, 1 - horiz));
+        // Высота верхней полусферы эллипсоида в этой точке
+        const y = c.center.y + c.radii.y * Math.sqrt(1 - horiz);
         const worldY = f.root.position.y + y * bs;
         if (worldY > top && (maxY === undefined || worldY <= maxY)) { top = worldY; zone = c; }
       }
-      return zone ? { y: top, zone, soft: zone ? zone.softness : 0 } : null;
+      return zone ? { y: top, zone } : null;
     }
 
     /* --------------------------------------------------------

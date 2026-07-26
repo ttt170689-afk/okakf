@@ -24,6 +24,7 @@
       this.renderer = renderer;
       this.audio = audio;
       this.colliders = [];       // {type:'box'|'cyl', ...} для игрока
+      this.platforms = [];       // {x,z,w,d,y} горизонтальные опоры: полы, ступени, балкон
       this.interactables = [];   // {pos, radius, label, action, id}
       this.pickups = [];         // собираемые ингредиенты
       this.npcs = [];
@@ -155,6 +156,21 @@
       this.groundGeo = geo;
     }
 
+    /**
+     * Высота платформы (пол этажа, ступень, балкон) под точкой, если игрок
+     * находится над ней. Возвращает null, если платформы нет.
+     * @param {number} maxY — не выше этой отметки (голова игрока)
+     */
+    platformAt(x, z, maxY) {
+      let best = null;
+      for (const p of this.platforms) {
+        if (Math.abs(x - p.x) > p.w / 2 || Math.abs(z - p.z) > p.d / 2) continue;
+        if (p.y > maxY) continue;
+        if (!best || p.y > best) best = p.y;
+      }
+      return best;
+    }
+
     /** Высота земли в точке (быстрая аппроксимация той же формулы) */
     heightAt(x, z) {
       let y = U.fbm(x * 0.008, 0, z * 0.008, 3) * 3.2 - 1.4;
@@ -185,6 +201,8 @@
       }
       connect(FF.LOC_BY_ID.farm, FF.LOC_BY_ID.mill, 5);
       connect(FF.LOC_BY_ID.cottage, FF.LOC_BY_ID.forest, 5);
+      // Короткая дорожка от крыльца дома прямо ко входу склада напротив
+      connect(FF.LOC_BY_ID.cottage, FF.LOC_BY_ID.secretvault, 6);
       this.scene.add(g);
       this.roads = g;
     }
@@ -367,121 +385,364 @@
       this.square = g;
     }
 
-    /* ==================== КОТТЕДЖ ==================== */
+    /* ==================== КОТТЕДЖ ====================
+     * Большой двухэтажный дом с мансардой. Габариты 26×22 (было 14×12) —
+     * рассчитан на то, что друг к 6–7 стадии перестаёт помещаться в обычную
+     * комнату. Первый этаж — единое пространство без несущих перегородок
+     * посередине, чтобы туша проходила от двери до кухни.
+     *
+     * Планировка (вид сверху, +Z — фасад, смотрит на Склад Прадеда):
+     *
+     *        −Z (задняя стена)
+     *   ┌──────────────────────────────┐
+     *   │ кухня  │ камин  │  кладовая  │  ← рабочая зона
+     *   │        └────────┘            │
+     *   │   ЗАЛ ДРУГА (открытый центр) │  ← лежанка, весы
+     *   │ ванна           │  лестница  │
+     *   └──────── ДВЕРЬ ───────────────┘
+     *        +Z (крыльцо, сад)
+     */
     _buildCottage() {
       const L = FF.LOC_BY_ID.cottage;
       const g = new THREE.Group();
       g.position.set(L.x, 0, L.z);
+
       const wall = mat('cwall', { color: 0xffc0cb, roughness: 0.9, side: THREE.DoubleSide });
+      const wallIn = mat('cwallin', { color: 0xffe4ea, roughness: 0.95, side: THREE.DoubleSide });
       const roof = mat('croof', { color: 0xc4483c, roughness: 0.85 });
       const wood = mat('wood', { color: 0x8a5a3a, roughness: 0.9 });
+      const woodDark = mat('wooddark', { color: 0x6a4028, roughness: 0.92 });
+      const stone = mat('cstone', { color: 0x9a9098, roughness: 0.95 });
       const glass = new THREE.MeshPhysicalMaterial({ color: 0xaad4ff, transparent: true, opacity: 0.35,
         roughness: 0.05, transmission: 0.8, thickness: 0.2 });
 
-      // Корпус 2 этажа (открытый спереди — можно заходить)
-      const W = 14, D = 12, H1 = 4.2, H2 = 3.8;
-      // стены (4 стены с проёмом-дверью)
-      g.add(this._box(W, H1 + H2, 0.4, wall, 0, (H1 + H2) / 2, -D / 2));   // задняя
-      g.add(this._box(0.4, H1 + H2, D, wall, -W / 2, (H1 + H2) / 2, 0));   // левая
-      g.add(this._box(0.4, H1 + H2, D, wall, W / 2, (H1 + H2) / 2, 0));    // правая
-      // передняя с дверным проёмом
-      g.add(this._box(4.6, H1 + H2, 0.4, wall, -4.7, (H1 + H2) / 2, D / 2));
-      g.add(this._box(4.6, H1 + H2, 0.4, wall, 4.7, (H1 + H2) / 2, D / 2));
-      g.add(this._box(4.8, H1 + H2 - 3.4, 0.4, wall, 0, (H1 + H2) - (H1 + H2 - 3.4) / 2, D / 2));
-      // перекрытие между этажами
-      g.add(this._box(W, 0.3, D, wood, 0, H1, 0));
-      g.add(this._box(W, 0.3, D, wood, 0, 0.1, 0));
-      // Крыша
-      const rf = new THREE.Mesh(new THREE.ConeGeometry(11.2, 4.4, 4), roof);
-      rf.rotation.y = Math.PI / 4; rf.position.y = H1 + H2 + 2.2;
+      /* --- Габариты --- */
+      const W = 26, D = 22;          // было 14×12 — почти вчетверо больше площадь
+      const H1 = 5.6, H2 = 4.6;      // высокий первый этаж: друг проходит стоя
+      const T = 0.5;                 // толщина стены
+      const DOOR = 7.0;              // ширина парадного проёма (было 4.8)
+      const TOP = H1 + H2;
+
+      /** Стена с учётом того, что верх/низ считаем от пола */
+      const wallSeg = (w, h, d, x, y, z, m) => g.add(this._box(w, h, d, m || wall, x, y, z));
+
+      /* --- Фундамент и цоколь --- */
+      g.add(this._box(W + 2.4, 0.7, D + 2.4, stone, 0, 0.35, 0));
+      // Пол первого этажа
+      g.add(this._box(W, 0.3, D, wood, 0, 0.7, 0));
+      this.platforms.push({ x: L.x, z: L.z, w: W, d: D, y: 0.85 });
+
+      /* --- Стены коробки --- */
+      wallSeg(W, TOP, T, 0, TOP / 2 + 0.7, -D / 2);          // задняя
+      wallSeg(T, TOP, D, -W / 2, TOP / 2 + 0.7, 0);          // левая
+      wallSeg(T, TOP, D, W / 2, TOP / 2 + 0.7, 0);           // правая
+      // Фасад: два простенка + перемычка над широким проёмом
+      const side = (W - DOOR) / 2;
+      wallSeg(side, TOP, T, -(DOOR + side) / 2, TOP / 2 + 0.7, D / 2);
+      wallSeg(side, TOP, T, (DOOR + side) / 2, TOP / 2 + 0.7, D / 2);
+      wallSeg(DOOR, TOP - 4.6, T, 0, 0.7 + 4.6 + (TOP - 4.6) / 2, D / 2);
+
+      /* --- Перекрытие второго этажа ---
+       * Не сплошное: два выреза. Световой колодец 9×7 над центром зала —
+       * с балкона видно друга внизу во весь рост. И лестничный проём вдоль
+       * правой стены, иначе с этажа было бы не спуститься.
+       *
+       * Перекрытие задаётся списком прямоугольников [x0,x1,z0,z1]; они же
+       * идут в platforms как опоры для ног. */
+      const HOLE_W = 9, HOLE_D = 7;
+      const fy = 0.7 + H1;
+      const f2 = fy + 0.17;
+      const STAIR_X0 = 8.6, STAIR_Z0 = -3.6, STAIR_Z1 = 9.8;   // лестничный проём
+
+      const slabs = [
+        [-W / 2, W / 2, -D / 2, -HOLE_D / 2],            // задняя полоса
+        [-W / 2, STAIR_X0, HOLE_D / 2, D / 2],           // передняя (до лестницы)
+        [-W / 2, -HOLE_W / 2, -HOLE_D / 2, HOLE_D / 2],  // левая перемычка
+        [HOLE_W / 2, STAIR_X0, -HOLE_D / 2, HOLE_D / 2], // правая перемычка
+        [STAIR_X0, W / 2, STAIR_Z1, D / 2],              // площадка за лестницей
+      ];
+      for (const [x0, x1, z0, z1] of slabs) {
+        const sw = x1 - x0, sd = z1 - z0;
+        if (sw <= 0.01 || sd <= 0.01) continue;
+        const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+        g.add(this._box(sw, 0.34, sd, wood, cx, fy, cz));
+        this.platforms.push({ x: L.x + cx, z: L.z + cz, w: sw, d: sd, y: f2 });
+      }
+
+      // Перила: вокруг светового колодца и вдоль лестничного проёма
+      const rail = mat('crail', { color: 0x7a4a2a, roughness: 0.9 });
+      for (const [rx, rz, rw, rd] of [
+        [0, -HOLE_D / 2, HOLE_W, 0.18], [0, HOLE_D / 2, HOLE_W, 0.18],
+        [-HOLE_W / 2, 0, 0.18, HOLE_D],
+        [STAIR_X0, (STAIR_Z0 + STAIR_Z1) / 2, 0.18, STAIR_Z1 - STAIR_Z0],
+        [(STAIR_X0 + W / 2) / 2, STAIR_Z0, W / 2 - STAIR_X0, 0.18]]) {
+        g.add(this._box(rw, 0.9, rd, rail, rx, f2 + 0.45, rz));
+      }
+
+      /* --- ЛЕСТНИЦА на второй этаж (правая стена, 14 ступеней) ---
+       * Идёт от крыльца вглубь дома, выходит на заднюю полосу перекрытия. */
+      const stepN = 14, stepH = H1 / stepN, stepW = 3.4, stepD = 0.9;
+      const sx = W / 2 - stepW / 2 - 0.6;
+      for (let i = 0; i < stepN; i++) {
+        const sy = 0.85 + stepH * (i + 0.5);
+        const sz = D / 2 - 2.2 - i * stepD;
+        // Проступь с небольшим свесом, а опора ещё шире: так между ступенями
+        // и на стыке с перекрытием не остаётся щели, куда проваливается нога.
+        g.add(this._box(stepW, stepH, stepD * 1.15, woodDark, sx, sy, sz));
+        this.platforms.push({ x: L.x + sx, z: L.z + sz, w: stepW, d: stepD + 0.32, y: sy + stepH / 2 });
+      }
+      // Площадка наверху: стыкует последнюю ступень с полом второго этажа
+      g.add(this._box(stepW, 0.34, 1.6, woodDark, sx, f2 - 0.17, D / 2 - 2.2 - stepN * stepD + 0.2));
+      this.platforms.push({ x: L.x + sx, z: L.z + D / 2 - 2.2 - stepN * stepD + 0.2,
+        w: stepW, d: 1.6, y: f2 });
+
+      /* --- Крыша: мансарда с двумя скатами и слуховым окном --- */
+      const rf = new THREE.Mesh(new THREE.ConeGeometry(W * 0.78, 6.2, 4), roof);
+      rf.rotation.y = Math.PI / 4;
+      rf.position.y = 0.7 + TOP + 3.1;
       g.add(rf);
-      // Окна
-      for (const [x, y, z, rot] of [[-4, 2.2, D / 2 + 0.05, 0], [4, 2.2, D / 2 + 0.05, 0],
-        [-4, 6.0, D / 2 + 0.05, 0], [4, 6.0, D / 2 + 0.05, 0],
-        [-W / 2 - 0.05, 2.2, 0, Math.PI / 2], [W / 2 + 0.05, 2.2, 0, Math.PI / 2]]) {
-        const w = new THREE.Mesh(new THREE.PlaneGeometry(2.6, 1.8), glass);
-        w.position.set(x, y, z); w.rotation.y = rot;
-        g.add(w);
+      // Труба
+      g.add(this._box(1.6, 4.2, 1.6, stone, -W / 2 + 5, 0.7 + TOP + 2.6, -D / 2 + 5));
+
+      /* --- Окна: большие витражные, первый и второй этаж --- */
+      const winMake = (w, h, x, y, z, rot) => {
+        const win = new THREE.Mesh(new THREE.PlaneGeometry(w, h), glass);
+        win.position.set(x, y, z); win.rotation.y = rot;
+        g.add(win);
+        // рама
+        const fr = this._box(w + 0.3, 0.16, 0.16, wood, x, y - h / 2, z);
+        if (rot !== 0) { fr.rotation.y = rot; }
+        g.add(fr);
+      };
+      for (const s of [-1, 1]) {
+        winMake(4.2, 2.6, s * (DOOR / 2 + side / 2), 3.4, D / 2 + 0.06, 0);        // фасад 1 эт
+        winMake(3.4, 2.2, s * 7, 0.7 + H1 + 2.4, D / 2 + 0.06, 0);                 // фасад 2 эт
+        winMake(4.6, 2.8, s * (W / 2 + 0.06), 3.4, -2, Math.PI / 2);               // боковые 1 эт
+        winMake(3.4, 2.2, s * (W / 2 + 0.06), 0.7 + H1 + 2.4, 3, Math.PI / 2);     // боковые 2 эт
       }
-      // Крыльцо + кресло-качалка
-      g.add(this._box(W + 3, 0.3, 3.5, wood, 0, 0.16, D / 2 + 1.7));
-      const rocker = this._box(1.0, 1.2, 1.0, wood, 4.5, 0.9, D / 2 + 1.6);
+      // Панорамное окно в задней стене — вид на сад
+      winMake(7.0, 3.0, 0, 3.6, -D / 2 - 0.06, 0);
+
+      /* --- Крыльцо: широкое, с навесом на столбах и пандусом --- */
+      const porchD = 5.0;
+      g.add(this._box(W + 4, 0.5, porchD, wood, 0, 0.45, D / 2 + porchD / 2));
+      this.platforms.push({ x: L.x, z: L.z + D / 2 + porchD / 2, w: W + 4, d: porchD, y: 0.7 });
+      // Пандус для друга: с земли на крыльцо, пологий
+      const ramp = this._box(9, 0.4, 5.5, woodDark, 0, 0.34, D / 2 + porchD + 2.4);
+      ramp.rotation.x = -0.085;
+      g.add(ramp);
+      for (let i = 0; i < 7; i++) {
+        const rz = D / 2 + porchD + 4.9 - i * 0.8;
+        this.platforms.push({ x: L.x, z: L.z + rz, w: 9, d: 0.85, y: 0.16 + i * 0.078 });
+      }
+      // Столбы крыльца: держат балкон второго этажа, он же навес над входом.
+      // Отдельной крыши здесь нет — балкон её и заменяет.
+      for (const px of [-W / 2 - 1, -6, 6, W / 2 + 1]) {
+        g.add(this._cyl(0.22, 0.26, 6.0, wood, px, 3.5, D / 2 + porchD - 0.7));
+      }
+      // Козырёк над боковыми краями крыльца, куда балкон не достаёт
+      for (const cx of [-(W - 4) / 2 - 2.6, (W - 4) / 2 + 2.6]) {
+        g.add(this._box(5.2, 0.3, porchD + 0.6, roof, cx, 6.35, D / 2 + porchD / 2));
+      }
+      // Кресло-качалка (анимируется)
+      const rocker = this._box(1.3, 1.5, 1.3, wood, W / 2 - 2, 1.45, D / 2 + 2.2);
       g.add(rocker); this.rocker = rocker;
+      // Лавка для друга на крыльце
+      g.add(this._box(6, 0.5, 2.0, woodDark, -7, 1.2, D / 2 + 2.4));
 
-      // Кухня (первый этаж, левая часть)
-      const counter = this._box(5, 1.0, 1.2, wood, -4, 0.7, -3.5);
+      /* ==================== ПЕРВЫЙ ЭТАЖ ==================== */
+
+      /* --- КУХНЯ (задняя левая четверть) --- */
+      const counter = this._box(9, 1.15, 1.6, wood, -W / 2 + 5.4, 1.45, -D / 2 + 1.6);
       g.add(counter);
-      const stove = this._box(1.6, 1.1, 1.2, mat('metal2', { color: 0x9aa0a8, roughness: 0.3, metalness: 0.75 }), 0.6, 0.75, -4.5);
+      // Верхние шкафы
+      g.add(this._box(9, 1.4, 0.9, woodDark, -W / 2 + 5.4, 3.7, -D / 2 + 1.1));
+      const stove = this._box(2.4, 1.3, 1.6,
+        mat('metal2', { color: 0x9aa0a8, roughness: 0.3, metalness: 0.75 }), -W / 2 + 11.4, 1.5, -D / 2 + 1.6);
       g.add(stove);
-      const fridge = this._box(1.6, 2.6, 1.4, mat('fridge', { color: 0xe8f0f5, roughness: 0.35, metalness: 0.2 }), -6, 1.4, -4.6);
+      // Вытяжка
+      g.add(this._box(2.6, 1.0, 1.4, mat('hood', { color: 0xb8bec6, roughness: 0.35, metalness: 0.6 }),
+        -W / 2 + 11.4, 3.9, -D / 2 + 1.6));
+      // Два холодильника: обычный и промышленный (для друга)
+      const fridge = this._box(2.0, 3.2, 1.6,
+        mat('fridge', { color: 0xe8f0f5, roughness: 0.35, metalness: 0.2 }), -W / 2 + 1.6, 2.45, -D / 2 + 1.8);
       g.add(fridge);
-      this.interactables.push({ id: 'craft', pos: new THREE.Vector3(L.x - 4, 1.4, L.z - 3.5), radius: 3.2,
-        label: 'Кухня: готовить (крафт)', action: 'craft' });
-      this.interactables.push({ id: 'fridge', pos: new THREE.Vector3(L.x - 6, 1.4, L.z - 4.6), radius: 2.6,
-        label: 'Холодильник: склад', action: 'storage' });
+      const fridge2 = this._box(3.2, 3.6, 1.8,
+        mat('fridge2', { color: 0xcfe0ea, roughness: 0.3, metalness: 0.3 }), -W / 2 + 1.9, 2.65, -D / 2 + 5.2);
+      g.add(fridge2);
+      // Островок-стол посреди кухни
+      g.add(this._box(4.4, 1.1, 2.2, wood, -W / 2 + 6.5, 1.4, -D / 2 + 5.4));
 
-      // Гостиная: диван, ковёр, камин, ТВ
-      const sofa = this._sofa(mat('sofa2', { color: 0xd88ab0, roughness: 1 }));
-      sofa.scale.set(2.2, 1.6, 1.8); sofa.position.set(4.5, 0.1, -1.5);
-      g.add(sofa);
-      const carpet = new THREE.Mesh(new THREE.CircleGeometry(3.4, 24), mat('carpet', { color: 0xc46a6a, roughness: 1 }));
-      carpet.rotation.x = -Math.PI / 2; carpet.position.set(4, 0.28, 2);
-      g.add(carpet);
-      const fire = this._box(2.6, 2.4, 0.8, mat('brick', { color: 0x8a6a5a, roughness: 1 }), 4, 1.4, -5.4);
+      this.interactables.push({ id: 'craft', pos: new THREE.Vector3(L.x - W / 2 + 8, 1.6, L.z - D / 2 + 3.4),
+        radius: 4.2, label: '🍳 Кухня: готовить (крафт)', action: 'craft' });
+      this.interactables.push({ id: 'fridge', pos: new THREE.Vector3(L.x - W / 2 + 1.9, 1.6, L.z - D / 2 + 5.2),
+        radius: 3.0, label: '🧊 Холодильник: склад', action: 'storage' });
+
+      /* --- КАМИН И ГОСТИНАЯ (задняя правая четверть) --- */
+      const fire = this._box(4.0, 3.4, 1.2, mat('brick', { color: 0x8a6a5a, roughness: 1 }),
+        W / 2 - 6, 2.4, -D / 2 + 0.9);
       g.add(fire);
-      const flame = new THREE.PointLight(0xff8844, 2.2, 12, 2);
-      flame.position.set(4 + L.x, 1.2, -5 + L.z);
+      // Топка
+      g.add(this._box(2.4, 1.6, 0.5, mat('firebox', { color: 0x2a1a16, roughness: 1 }),
+        W / 2 - 6, 1.75, -D / 2 + 1.5));
+      const flame = new THREE.PointLight(0xff8844, 2.6, 20, 2);
+      flame.position.set(L.x + W / 2 - 6, 2.0, L.z - D / 2 + 1.8);
       this.scene.add(flame); this.lights.push({ light: flame, flicker: true });
-      this.interactables.push({ id: 'sleep', pos: new THREE.Vector3(L.x + 4.5, 1, L.z - 1.5), radius: 2.6,
-        label: 'Отдохнуть на диване (пропустить время)', action: 'sleep' });
 
-      // Второй этаж: кровати
-      const bed = this._box(3, 0.7, 4.4, mat('bed', { color: 0xf0e0f0, roughness: 1 }), -4.5, H1 + 0.6, -3);
-      g.add(bed);
-      const furryBed = new THREE.Mesh(new THREE.CylinderGeometry(3.6, 3.6, 0.7, 24), mat('fbed', { color: 0xffd0e0, roughness: 1 }));
-      furryBed.position.set(4, H1 + 0.6, 1);
-      g.add(furryBed);
-      this.interactables.push({ id: 'bed', pos: new THREE.Vector3(L.x - 4.5, H1 + 1.2, L.z - 3), radius: 2.6,
-        label: 'Спать до утра', action: 'sleep_night' });
+      // Большой диван под друга
+      const sofa = this._sofa(mat('sofa2', { color: 0xd88ab0, roughness: 1 }));
+      sofa.scale.set(3.0, 2.0, 2.4);
+      sofa.position.set(W / 2 - 6.5, 0.85, -4.5);
+      g.add(sofa);
+      const carpet = new THREE.Mesh(new THREE.CircleGeometry(5.0, 28),
+        mat('carpet', { color: 0xc46a6a, roughness: 1 }));
+      carpet.rotation.x = -Math.PI / 2; carpet.position.set(W / 2 - 7, 0.87, -1.5);
+      g.add(carpet);
+      this.interactables.push({ id: 'sleep', pos: new THREE.Vector3(L.x + W / 2 - 6.5, 1.4, L.z - 4.5),
+        radius: 3.4, label: '🛋️ Отдохнуть на диване (пропустить время)', action: 'sleep' });
 
-      // Ванна (для мытья фурри)
-      const bath = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.2, 1.2, 20),
+      /* --- ЗАЛ ДРУГА: центр первого этажа, ничем не заставлен --- */
+      // Огромная лежанка-матрас
+      const nest = new THREE.Mesh(new THREE.CylinderGeometry(5.4, 5.8, 0.8, 28),
+        mat('fbed', { color: 0xffd0e0, roughness: 1 }));
+      nest.position.set(-2, 1.25, 2.5);
+      g.add(nest);
+      this.interactables.push({ id: 'furry_nest', pos: new THREE.Vector3(L.x - 2, 1.6, L.z + 2.5),
+        radius: 5.0, label: '🐾 Лежанка друга: почесать пузо', action: 'pet' });
+      // Промышленные весы, утопленные в пол
+      const scalePad = new THREE.Mesh(new THREE.CylinderGeometry(3.2, 3.2, 0.16, 24),
+        mat('scale', { color: 0x8a9098, roughness: 0.35, metalness: 0.55 }));
+      scalePad.position.set(7, 0.93, 5.5);
+      g.add(scalePad);
+      this.interactables.push({ id: 'home_scale', pos: new THREE.Vector3(L.x + 7, 1.3, L.z + 5.5),
+        radius: 3.4, label: '⚖️ Взвесить друга', action: 'weigh' });
+
+      /* --- ВАННАЯ (передняя левая четверть) --- */
+      // Низкая перегородка — зонирует, но не мешает туше
+      g.add(this._box(0.4, 1.8, 7, wallIn, -W / 2 + 8.5, 1.75, D / 2 - 4.5));
+      const bath = new THREE.Mesh(new THREE.CylinderGeometry(3.6, 3.2, 1.6, 24),
         mat('bath', { color: 0xf8f8ff, roughness: 0.2, metalness: 0.1 }));
-      bath.position.set(-4.5, 0.7, 3.5);
+      bath.position.set(-W / 2 + 4.6, 1.65, D / 2 - 4.5);
       g.add(bath);
-      this.interactables.push({ id: 'bath', pos: new THREE.Vector3(L.x - 4.5, 1.2, L.z + 3.5), radius: 3,
-        label: 'Искупать друга', action: 'bath' });
+      // Вода в ванне
+      const bathWater = new THREE.Mesh(new THREE.CylinderGeometry(3.4, 3.4, 0.12, 24),
+        new THREE.MeshPhysicalMaterial({ color: 0x9fd8ff, roughness: 0.08, transmission: 0.6,
+          transparent: true, opacity: 0.7 }));
+      bathWater.position.set(-W / 2 + 4.6, 2.3, D / 2 - 4.5);
+      g.add(bathWater);
+      this.interactables.push({ id: 'bath', pos: new THREE.Vector3(L.x - W / 2 + 4.6, 1.8, L.z + D / 2 - 4.5),
+        radius: 4.0, label: '🛁 Искупать друга', action: 'bath' });
 
-      // Сад: грядки, улей, кусты, дерево
-      for (let i = 0; i < 6; i++) {
-        const bedx = -10 + (i % 3) * 3, bedz = 10 + Math.floor(i / 3) * 3;
-        g.add(this._box(2.4, 0.4, 2.4, mat('soil', { color: 0x6b4a30, roughness: 1 }), bedx, 0.2, bedz));
-        this.pickups.push(this._pickup(L.x + bedx, L.z + bedz, 'berry', 0.6));
+      /* ==================== ВТОРОЙ ЭТАЖ ==================== */
+      const y2 = f2;
+      // Кровать игрока (задний левый угол)
+      g.add(this._box(4.0, 0.9, 5.6, mat('bed', { color: 0xf0e0f0, roughness: 1 }),
+        -W / 2 + 3.5, y2 + 0.45, -D / 2 + 4));
+      // Изголовье
+      g.add(this._box(4.0, 1.3, 0.3, woodDark, -W / 2 + 3.5, y2 + 1.2, -D / 2 + 1.2));
+      this.interactables.push({ id: 'bed', pos: new THREE.Vector3(L.x - W / 2 + 3.5, y2 + 1.0, L.z - D / 2 + 4),
+        radius: 3.2, label: '🛏️ Спать до утра', action: 'sleep_night' });
+
+      // Гнездо друга на втором этаже (если ещё пролезает по лестнице)
+      const furryBed = new THREE.Mesh(new THREE.CylinderGeometry(4.4, 4.4, 0.8, 24),
+        mat('fbed', { color: 0xffd0e0, roughness: 1 }));
+      furryBed.position.set(W / 2 - 6, y2 + 0.4, -D / 2 + 5);
+      g.add(furryBed);
+
+      // Рабочий стол с записями
+      g.add(this._box(3.4, 1.0, 1.4, wood, -W / 2 + 3.2, y2 + 0.5, 4));
+      g.add(this._box(1.2, 0.9, 0.1, mat('board', { color: 0xf4ead8, roughness: 1 }),
+        -W / 2 + 0.6, y2 + 1.8, 4));
+      this.interactables.push({ id: 'desk', pos: new THREE.Vector3(L.x - W / 2 + 3.2, y2 + 1.0, L.z + 4),
+        radius: 2.8, label: '📓 Дневник наблюдений', action: 'notebook' });
+
+      // Шкаф-гардероб
+      g.add(this._box(1.4, 3.0, 4.0, woodDark, W / 2 - 1.5, y2 + 1.5, 2));
+      this.interactables.push({ id: 'wardrobe_home', pos: new THREE.Vector3(L.x + W / 2 - 2.6, y2 + 1.2, L.z + 2),
+        radius: 2.8, label: '👕 Гардероб: переодеть друга', action: 'clothes' });
+
+      /* --- БАЛКОН над крыльцом --- */
+      const balD = 3.4;
+      g.add(this._box(W - 4, 0.34, balD, wood, 0, y2 - 0.17, D / 2 + balD / 2));
+      this.platforms.push({ x: L.x, z: L.z + D / 2 + balD / 2, w: W - 4, d: balD, y: y2 });
+      for (const [bx, bz, bw, bd] of [
+        [0, D / 2 + balD, W - 4, 0.2], [-(W - 4) / 2, D / 2 + balD / 2, 0.2, balD],
+        [(W - 4) / 2, D / 2 + balD / 2, 0.2, balD]]) {
+        g.add(this._box(bw, 1.0, bd, rail, bx, y2 + 0.5, bz));
       }
-      const hive = this._box(1.2, 1.6, 1.2, mat('hive', { color: 0xe8c060, roughness: 0.9 }), 9, 0.9, 9);
-      g.add(hive);
-      this.interactables.push({ id: 'hive_home', pos: new THREE.Vector3(L.x + 9, 1.2, L.z + 9), radius: 2.4,
-        label: 'Улей: собрать мёд', action: 'minigame', game: 'honey' });
-      const tree = this._tree(0x5c3a24, 0x6b4423, 3.5);
-      tree.position.set(-12, 0, -8);
-      g.add(tree);
+      this.interactables.push({ id: 'balcony', pos: new THREE.Vector3(L.x, y2 + 1.0, L.z + D / 2 + balD / 2),
+        radius: 3.6, label: '🌅 Балкон: полюбоваться городом', action: 'rest' });
 
-      // Почтовый ящик
-      const mb = this._box(0.6, 0.6, 0.9, mat('mailbox', { color: 0x4a80c8, roughness: 0.6 }), 8, 1.4, D / 2 + 3);
-      g.add(this._cyl(0.1, 0.1, 1.4, wood, 8, 0.7, D / 2 + 3));
+      /* --- Внутреннее освещение --- */
+      const lampIn = new THREE.PointLight(0xffe0b0, 1.5, 26, 2);
+      lampIn.position.set(L.x, 5.0, L.z + 2);
+      this.scene.add(lampIn); this.lights.push({ light: lampIn, window: true });
+
+      /* ==================== УЧАСТОК ====================
+       * Огород вынесен на левый бок дома, а не перед фасадом: прямо
+       * напротив крыльца стоит Склад Прадеда, и подход к нему должен
+       * оставаться свободным. */
+      for (let i = 0; i < 10; i++) {
+        const bedx = -W / 2 - 9.5 + (i % 2) * 3.6, bedz = -D / 2 + 2 + Math.floor(i / 2) * 3.6;
+        g.add(this._box(2.8, 0.4, 2.8, mat('soil', { color: 0x6b4a30, roughness: 1 }), bedx, 0.2, bedz));
+        this.pickups.push(this._pickup(L.x + bedx, L.z + bedz, i % 3 === 0 ? 'strawberry' : 'berry', 0.6));
+      }
+      // Улей — в дальнем углу, подальше от дорожки
+      const hive = this._box(1.6, 2.0, 1.6, mat('hive', { color: 0xe8c060, roughness: 0.9 }),
+        W / 2 + 6, 1.0, -D / 2 + 4);
+      g.add(hive);
+      this.interactables.push({ id: 'hive_home', pos: new THREE.Vector3(L.x + W / 2 + 6, 1.4, L.z - D / 2 + 4),
+        radius: 3.0, label: '🍯 Улей: собрать мёд', action: 'minigame', game: 'honey' });
+      // Деревья по углам участка
+      for (const [tx, tz, ts] of [[-W / 2 - 6, -D / 2 - 4, 4.0], [W / 2 + 7, -D / 2 - 2, 3.4],
+        [-W / 2 - 8, D / 2 + 6, 3.0]]) {
+        const tr = this._tree(0x5c3a24, 0x6b4423, ts);
+        tr.position.set(tx, 0, tz);
+        g.add(tr);
+      }
+      // Забор по периметру. Спереди он идёт по краю крыльца и имеет
+      // калитку по центру — дальше начинается дорожка к складу.
+      const fenceMat = mat('cfence', { color: 0xd8c0a8, roughness: 0.95 });
+      const FX = W / 2 + 13, FZ1 = -D / 2 - 10, FZ2 = D / 2 + 11;
+      for (let x = -FX; x <= FX; x += 2.2) {
+        if (Math.abs(x) < 5) continue;              // проём калитки
+        g.add(this._box(0.18, 1.5, 0.18, fenceMat, x, 0.75, FZ2));
+        g.add(this._box(0.18, 1.5, 0.18, fenceMat, x, 0.75, FZ1));
+      }
+      for (let z = FZ1; z <= FZ2; z += 2.2) {
+        g.add(this._box(0.18, 1.5, 0.18, fenceMat, -FX, 0.75, z));
+        g.add(this._box(0.18, 1.5, 0.18, fenceMat, FX, 0.75, z));
+      }
+      // Столбики калитки
+      for (const gx of [-5, 5]) g.add(this._box(0.34, 2.0, 0.34, wood, gx, 1.0, FZ2));
+      // Фонари у крыльца
+      this._lamp(L.x - W / 2 - 2, L.z + D / 2 + 7, this.scene, true);
+      this._lamp(L.x + W / 2 + 2, L.z + D / 2 + 7, this.scene, false);
+
+      // Почтовый ящик у калитки
+      const mbz = D / 2 + 10.5;
+      const mb = this._box(0.8, 0.8, 1.1, mat('mailbox', { color: 0x4a80c8, roughness: 0.6 }),
+        6.4, 1.6, mbz);
+      g.add(this._cyl(0.12, 0.12, 1.6, wood, 6.4, 0.8, mbz));
       g.add(mb);
-      this.interactables.push({ id: 'mail', pos: new THREE.Vector3(L.x + 8, 1.4, L.z + D / 2 + 3), radius: 2.4,
-        label: 'Почтовый ящик', action: 'mail' });
+      this.interactables.push({ id: 'mail', pos: new THREE.Vector3(L.x + 6.4, 1.6, L.z + mbz),
+        radius: 2.8, label: '📮 Почтовый ящик', action: 'mail' });
 
       g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
       this.scene.add(g);
       this.cottage = g;
-      // Коллизии стен
-      this.colliders.push({ type: 'box', x: L.x, z: L.z - D / 2, w: W, d: 0.6, h: 8 });
-      this.colliders.push({ type: 'box', x: L.x - W / 2, z: L.z, w: 0.6, d: D, h: 8 });
-      this.colliders.push({ type: 'box', x: L.x + W / 2, z: L.z, w: 0.6, d: D, h: 8 });
-      this.colliders.push({ type: 'box', x: L.x - 4.7, z: L.z + D / 2, w: 4.6, d: 0.6, h: 8 });
-      this.colliders.push({ type: 'box', x: L.x + 4.7, z: L.z + D / 2, w: 4.6, d: 0.6, h: 8 });
+
+      /* --- Коллизии: стены дома (проём двери свободен) --- */
+      const wh = 0.7 + TOP;
+      this.colliders.push({ type: 'box', x: L.x, z: L.z - D / 2, w: W, d: T + 0.2, h: wh });
+      this.colliders.push({ type: 'box', x: L.x - W / 2, z: L.z, w: T + 0.2, d: D, h: wh });
+      this.colliders.push({ type: 'box', x: L.x + W / 2, z: L.z, w: T + 0.2, d: D, h: wh });
+      this.colliders.push({ type: 'box', x: L.x - (DOOR + side) / 2, z: L.z + D / 2, w: side, d: T + 0.2, h: wh });
+      this.colliders.push({ type: 'box', x: L.x + (DOOR + side) / 2, z: L.z + D / 2, w: side, d: T + 0.2, h: wh });
+      // Крупная мебель, сквозь которую нельзя ходить
+      this.colliders.push({ type: 'box', x: L.x - W / 2 + 5.4, z: L.z - D / 2 + 1.6, w: 9, d: 1.6, h: 1.6 });
+      this.colliders.push({ type: 'box', x: L.x + W / 2 - 6, z: L.z - D / 2 + 0.9, w: 4.0, d: 1.2, h: 3.4 });
+      this.colliders.push({ type: 'box', x: L.x - W / 2 + 1.9, z: L.z - D / 2 + 5.2, w: 3.2, d: 1.8, h: 3.6 });
     }
 
     /* ==================== КАФЕ ==================== */
@@ -1286,30 +1547,44 @@
      * Открывается по находке карты; телепорт — из меню карты (Tab).
      */
     _buildSecretVault() {
-      // Перемещаем Склад Прадеда (фиолетовый домик) напротив коттеджа (дома)
-      const cottageL = FF.LOC_BY_ID.cottage;
-      const wx = cottageL.x;
-      const wz = cottageL.z + 50;
-      const L = { x: wx, z: wz, r: 14, color: 0x9b7bd4 };
+      const L = FF.LOC_BY_ID.secretvault;
       const g = new THREE.Group();
-      const gy = this.heightAt(wx, wz);
-      g.position.set(wx, gy, wz);
+      const gy = this.heightAt(L.x, L.z);
+      g.position.set(L.x, gy, L.z);
 
       const stone = mat('vaultstone', { color: 0x6a5f7e, roughness: 0.8 });
       const gold = mat('vaultgold', { color: 0xd8b45a, roughness: 0.3, metalness: 0.75 });
       const rune = new THREE.MeshStandardMaterial({ color: 0x9b7bd4, roughness: 0.3,
         emissive: 0x6a4bb4, emissiveIntensity: 1.4 });
 
+      /* Ориентация: склад стоит НАПРОТИВ коттеджа и развёрнут к нему входом.
+       * face = −1 → фасад со стороны −Z (дом южнее), +1 → со стороны +Z. */
+      const C = FF.LOC_BY_ID.cottage;
+      const face = Math.sign(C.z - L.z) || -1;
+      // Угол проёма в стене: в THREE.CylinderGeometry theta=0 смотрит в +Z
+      const gapCenter = face < 0 ? Math.PI : 0;
+      const gapHalf = 0.30;   // ~5.4 м проёма по дуге
+
       // Основание-платформа
       const base = new THREE.Mesh(new THREE.CylinderGeometry(13, 15, 1.6, 12), stone);
       base.position.y = 0.8;
       g.add(base);
 
-      // Круглый зал с куполом
-      const hall = new THREE.Mesh(new THREE.CylinderGeometry(9, 9.4, 7, 16, 1, true),
+      // Круглый зал с куполом. Стена идёт не на 360°, а с разрывом —
+      // это и есть дверной проём, обращённый к дому.
+      const hall = new THREE.Mesh(
+        new THREE.CylinderGeometry(9, 9.4, 7, 22, 1, true,
+          gapCenter + gapHalf, Math.PI * 2 - gapHalf * 2),
         new THREE.MeshStandardMaterial({ color: 0x655a78, roughness: 0.8, side: THREE.DoubleSide }));
       hall.position.y = 5.1;
       g.add(hall);
+      // Притолока над проёмом, чтобы стена не обрывалась в пустоту
+      const overDoor = new THREE.Mesh(
+        new THREE.CylinderGeometry(9, 9.1, 1.6, 12, 1, true,
+          gapCenter - gapHalf, gapHalf * 2),
+        new THREE.MeshStandardMaterial({ color: 0x655a78, roughness: 0.8, side: THREE.DoubleSide }));
+      overDoor.position.y = 7.8;
+      g.add(overDoor);
       const dome = new THREE.Mesh(new THREE.SphereGeometry(9.1, 18, 10, 0, Math.PI * 2, 0, Math.PI / 2),
         new THREE.MeshStandardMaterial({ color: 0x554a66, roughness: 0.78, side: THREE.DoubleSide }));
       dome.position.y = 8.6;
@@ -1386,12 +1661,44 @@
       oculus.position.y = 8.5;
       g.add(oculus);
 
+      /* --- ВХОД СМОТРИТ НА ДОМ ---
+       * Портик, ступени и руна ставятся на стороне `face`, чтобы двери
+       * склада и коттеджа глядели строго друг на друга. */
+
+      // Ступени от земли к полу зала
+      for (let i = 0; i < 3; i++) {
+        const st = new THREE.Mesh(new THREE.BoxGeometry(7 - i * 0.6, 0.55, 1.6), stone);
+        st.position.set(0, 0.28 + i * 0.5, face * (13.4 - i * 1.5));
+        g.add(st);
+      }
+      // Портик: две колонны и перемычка над проёмом
+      for (const sx of [-2.9, 2.9]) {
+        const pc = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.65, 7.4, 10), stone);
+        pc.position.set(sx, 5.3, face * 9.6);
+        g.add(pc);
+      }
+      const lintel = new THREE.Mesh(new THREE.BoxGeometry(7.6, 1.1, 1.4), gold);
+      lintel.position.set(0, 9.4, face * 9.6);
+      g.add(lintel);
+      // Светящаяся руна-указатель над входом — видна с крыльца дома
+      const doorRune = new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.12, 8, 20), rune);
+      doorRune.position.set(0, 10.6, face * 9.6);
+      g.add(doorRune);
+      // Дорожка от склада в сторону дома. Длину держим так, чтобы она
+      // не упиралась в калитку палисадника — там её подхватывает дорога.
+      const path = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 9),
+        mat('vaultpath', { color: 0xd8cbb4, roughness: 0.95 }));
+      path.rotation.x = -Math.PI / 2;
+      path.position.set(0, 0.06, face * 18.5);
+      g.add(path);
+
       g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
       this.scene.add(g);
       this.secretVault = g;
 
+      // Точка взаимодействия — перед входом, со стороны дома
       this.interactables.push({
-        id: 'secretvault', pos: new THREE.Vector3(L.x, gy + 2.5, L.z + 3),
+        id: 'secretvault', pos: new THREE.Vector3(L.x, gy + 2.5, L.z + face * 13),
         radius: 7, label: '⭐ Склад Прадеда: легендарные припасы', action: 'vault',
       });
 

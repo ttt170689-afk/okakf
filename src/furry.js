@@ -19,34 +19,83 @@
   const THREE = global.THREE;
   const U = FF.U;
 
-  /** Узел мягкого тела — одна из 60 зон */
+  // Временные векторы: физика в горячем цикле не должна плодить мусор
+  const _tmpAccelA = new THREE.Vector3();
+  const _tmpAccelB = new THREE.Vector3();
+  const _tmpWaveA = new THREE.Vector3();
+  const _tmpDisp = new THREE.Vector3();
+
+  /**
+   * Узел мягкого тела — одна из 60 зон.
+   *
+   * v2.0 «God-Tier»: вместо одной пружины зона моделируется тремя слоями
+   * жира. Глубокий слой плотный и медленный (держит форму), средний —
+   * упругий, поверхностный — почти желе: именно он даёт остаточную дрожь
+   * после того, как тело остановилось.
+   *
+   *   deep ──сила──> medium ──сила──> superficial
+   *
+   * Итоговое смещение — сумма трёх слоёв, поэтому движение получается
+   * не «одним мешком», а с внутренним запаздыванием, как настоящая плоть.
+   */
   class SoftNode {
     constructor(zone, index) {
       this.zone = zone;
       this.index = index;
       this.base = new THREE.Vector3().fromArray(zone.pos);
       this.dir = new THREE.Vector3().fromArray(zone.dir).normalize();
-      this.offset = new THREE.Vector3();   // текущее динамическое смещение (жир)
-      this.vel = new THREE.Vector3();      // скорость
+      this.offset = new THREE.Vector3();   // суммарное смещение (для совместимости)
+      this.vel = new THREE.Vector3();      // скорость глубокого слоя (вход импульсов)
       this.dent = new THREE.Vector3();     // вмятина от касания
       this.dentVel = new THREE.Vector3();
       this.growth = 0;                     // 0..1 визуальный рост
       this.growthTarget = 0;
       this.calories = 0;                   // накоплено в зоне
-      this.heat = 0;                       // «нагрев» от массажа (для эмоций)
+      this.heat = 0;                       // «нагрев» от массажа/трения
       this.mass = zone.mass;
       this.soft = zone.soft;
       this.damp = zone.damp;
+
+      /* --- Профиль поведения (см. ZONE_PHYSICS в config.js) --- */
+      this.jiggleK = zone.jiggle !== undefined ? zone.jiggle : 0.5;
+      this.sagK = zone.sag !== undefined ? zone.sag : 0.3;
+      this.pendK = zone.pend !== undefined ? zone.pend : 0.4;
+      this.microK = zone.micro !== undefined ? zone.micro : 0.5;
+      this.breathK = zone.breath !== undefined ? zone.breath : 0;
+      this.layerCount = zone.layers || 2;
+
+      /* --- Слои жира --- */
+      const LC = FF.CONFIG.soft.layers;
+      this.layers = [];
+      const names = ['deep', 'medium', 'superficial'];
+      for (let i = 0; i < this.layerCount; i++) {
+        const c = LC[names[i]];
+        this.layers.push({
+          cfg: c,
+          pos: new THREE.Vector3(),
+          vel: new THREE.Vector3(),
+        });
+      }
+      // Нормировка амплитуд, чтобы 1-, 2- и 3-слойные зоны были соизмеримы
+      let ampSum = 0;
+      for (const l of this.layers) ampSum += l.cfg.amp;
+      this.ampNorm = ampSum > 0 ? 1 / ampSum : 1;
+
+      this.microPhase = Math.random() * Math.PI * 2;   // своя фаза микро-дрожи
+      this.settle = 0;        // «оседание» жира при долгом стоянии
+      this.sweat = 0;         // испарина в складке
+      this.contactPress = 0;  // давление от соседней зоны (self-collision)
     }
 
-    /** Импульс по мягкому телу (тычок, шлепок, шаг) с гипер-реакцией живота */
+    /** Импульс по мягкому телу (тычок, шлепок, шаг) */
     impulse(vec, strength) {
       const k = strength / Math.max(3, this.mass);
-      this.vel.addScaledVector(vec, k);
-      // ГИПЕР-ФИЗИКА: живот реагирует сильнее, чем другие зоны
-      if (this.zone.id === 'mid_belly' || this.zone.id === 'lower_belly' || this.zone.id === 'upper_belly' || this.zone.id === 'apron_fold') {
-        this.vel.multiplyScalar(1.35);
+      // Импульс приходит в глубокий слой и дальше расходится вверх по слоям
+      this.layers[0].vel.addScaledVector(vec, k);
+      for (let i = 1; i < this.layers.length; i++) {
+        this.layers[i].vel.addScaledVector(vec, k * (1 + i * 0.45) * this.jiggleK);
       }
+      this.vel.addScaledVector(vec, k);
     }
 
     /** Вмятина в точке касания */
@@ -55,25 +104,87 @@
       this.heat = Math.min(1, this.heat + depth * 0.4);
     }
 
-    step(dt, gravitySag, globalDamp) {
-      const z = this.zone;
-      // Пружина возврата к позе (pose matching): чем мягче, тем слабее
-      const stiff = 26 * (1.15 - this.soft) + 5;
-      const damping = 5.5 + this.damp * 22;
+    /**
+     * Шаг симуляции.
+     * @param {number} dt
+     * @param {number} gravitySag глобальный множитель провисания
+     * @param {object} ctx контекст тела: ускорение, микро-дрожь, дыхание
+     */
+    step(dt, gravitySag, ctx) {
+      const S = FF.CONFIG.soft;
       const g = this.growth;
+      const soft = this.soft;
 
-      // Сила пружины
-      this.vel.addScaledVector(this.offset, -stiff * dt);
-      // Гравитационное провисание жира — тем сильнее, чем больше рост
-      this.vel.y -= gravitySag * g * this.soft * dt * 5.2;
-      // Затухание
-      const d = Math.exp(-damping * dt * (1.0 - this.soft * 0.45));
-      this.vel.multiplyScalar(d);
-      this.offset.addScaledVector(this.vel, dt);
+      // Насколько зона «налита» — пустая зона почти не колышется
+      const fill = 0.12 + g * 0.88;
 
-      // Ограничение амплитуды
-      const maxOff = FF.CONFIG.soft.maxOffset * (0.35 + g);
-      if (this.offset.lengthSq() > maxOff * maxOff) this.offset.setLength(maxOff);
+      /* --- Слои жира --- */
+      let sumX = 0, sumY = 0, sumZ = 0;
+      for (let i = 0; i < this.layers.length; i++) {
+        const L = this.layers[i];
+        const c = L.cfg;
+
+        // Пружина к покою: жёсткость падает с мягкостью зоны,
+        // adaptive stiffness — уставший/осевший жир держит хуже
+        const stiff = (26 * (1.15 - soft) + 5) * c.stiffness * (1 - this.settle * 0.25);
+        L.vel.addScaledVector(L.pos, -stiff * dt);
+
+        // Гравитация: анизотропна — своя для каждой зоны (sag из профиля).
+        // Загривок/плечи/полка над попой имеют sag=0 и не провисают вовсе.
+        L.vel.y -= gravitySag * g * soft * this.sagK * c.amp * dt * 6.4;
+
+        // Инерция тела: маятниковость. Зона отстаёт от корпуса,
+        // поэтому при ходьбе живот и грудь раскачиваются.
+        if (ctx.accel) {
+          const p = this.pendK * fill * c.amp * dt * 2.6;
+          L.vel.x -= ctx.accel.x * p;
+          L.vel.y -= ctx.accel.y * p * 0.7;
+          L.vel.z -= ctx.accel.z * p;
+        }
+
+        // Затухание. Поверхностный слой затухает медленнее => «дрожь вслед».
+        const damping = (5.5 + this.damp * 22) * c.damping
+          * (1 - S.momentumTrail * 0.45 * this.jiggleK);
+        L.vel.multiplyScalar(Math.exp(-damping * dt * (1.0 - soft * 0.45)));
+
+        L.pos.addScaledVector(L.vel, dt);
+
+        // Ограничение амплитуды слоя
+        const maxL = S.maxOffset * (0.35 + g) * c.amp * 1.6;
+        if (L.pos.lengthSq() > maxL * maxL) L.pos.setLength(maxL);
+
+        sumX += L.pos.x * c.amp; sumY += L.pos.y * c.amp; sumZ += L.pos.z * c.amp;
+      }
+
+      // Передача силы между слоями: глубокий тянет за собой верхние
+      const tr = S.layerTransfer * dt * 12;
+      for (let i = 0; i < this.layers.length - 1; i++) {
+        const a = this.layers[i], b = this.layers[i + 1];
+        b.vel.x += (a.vel.x - b.vel.x) * tr;
+        b.vel.y += (a.vel.y - b.vel.y) * tr;
+        b.vel.z += (a.vel.z - b.vel.z) * tr;
+      }
+
+      // Сумма слоёв — итоговое динамическое смещение
+      const n = this.ampNorm;
+      this.offset.set(sumX * n, sumY * n, sumZ * n);
+      this.vel.copy(this.layers[0].vel);
+
+      /* --- Микро-жизнь: тело не замирает даже в покое --- */
+      if (ctx.micro && g > 0.02) {
+        this.microPhase += dt * (1.6 + this.index * 0.017);
+        const m = S.microJiggle * this.microK * fill;
+        this.offset.y += Math.sin(this.microPhase) * m;
+        this.offset.x += Math.sin(this.microPhase * 0.7 + 1.3) * m * 0.5;
+        // Пульс сердца — общая для тела фаза, видна на больших массах
+        this.offset.y += ctx.heartbeat * S.heartbeatAmp * fill * this.microK;
+      }
+
+      /* --- Дыхание: грудь и живот поднимаются заметнее прочих --- */
+      if (this.breathK > 0) {
+        this.offset.z += ctx.breath * this.breathK * (0.02 + g * 0.055);
+        this.offset.y += ctx.breath * this.breathK * (0.01 + g * 0.02);
+      }
 
       // Вмятина восстанавливается своей пружиной (быстрее)
       this.dentVel.addScaledVector(this.dent, -60 * dt);
@@ -82,7 +193,16 @@
       const maxDent = 0.28 * (0.3 + g);
       if (this.dent.lengthSq() > maxDent * maxDent) this.dent.setLength(maxDent);
 
-      this.heat = Math.max(0, this.heat - dt * 0.35);
+      /* --- Термодинамика: трущиеся складки нагреваются и потеют --- */
+      if (this.zone.friction || this.zone.hot) {
+        const rub = this.contactPress + Math.min(1, this.vel.length() * 0.35);
+        this.heat = Math.min(1, this.heat + rub * g * S.thermalRate * dt);
+      }
+      this.heat = Math.max(0, this.heat - dt * S.thermalCool);
+      const wantSweat = this.heat > S.sweatThreshold ? (this.heat - S.sweatThreshold) * 2.2 : 0;
+      this.sweat = U.damp(this.sweat, Math.min(1, wantSweat) * g, 1.5, dt);
+      this.contactPress = Math.max(0, this.contactPress - dt * 4);
+
       this.growth = U.damp(this.growth, this.growthTarget, FF.CONFIG.growth.lerpSpeed, dt);
     }
 
@@ -90,9 +210,12 @@
     displacement(out) {
       const g = this.growth;
       const gain = this.zone.gain;
+      // Оседание: при долгом стоянии жир немного сползает вниз
+      const set = this.settle * this.sagK * g * 0.06;
       return out.copy(this.dir).multiplyScalar(gain * g)
         .add(this.offset)
-        .add(this.dent);
+        .add(this.dent)
+        .setY(out.y - set);
     }
   }
 
@@ -102,13 +225,22 @@
   const SKIN_VERT_PARS = `
     attribute float part;
     attribute float stretch;
+    attribute float heat;        // нагрев зоны (трение складок)
+    attribute float sweat;       // испарина
+    attribute float cellulite;   // предрасположенность зоны к целлюлиту
     varying float vStretch;
     varying float vPart;
+    varying float vHeat;
+    varying float vSweat;
+    varying float vCell;
     varying vec3 vLocalPos;
   `;
   const SKIN_VERT_MAIN = `
     vStretch = stretch;
     vPart = part;
+    vHeat = heat;
+    vSweat = sweat;
+    vCell = cellulite;
     vLocalPos = position;
   `;
   const SKIN_FRAG_PARS = `
@@ -120,6 +252,9 @@
     uniform float uTime;
     varying float vStretch;
     varying float vPart;
+    varying float vHeat;
+    varying float vSweat;
+    varying float vCell;
     varying vec3 vLocalPos;
 
     // Хеш-шум для шерстяного грейна
@@ -157,12 +292,29 @@
     // Румянец (эмоция смущения)
     baseCol = mix(baseCol, baseCol * vec3(1.25, 0.86, 0.9), uBlush * bellyMask * 0.5);
 
+    /* --- ЦЕЛЛЮЛИТ ---
+     * Ямочки в мягких зонах (бёдра, ягодицы). Двухчастотный шум даёт
+     * характерную «апельсиновую корку», проявляется только с массой. */
+    float cellAmt = vCell * smoothstep(0.15, 0.75, st);
+    if (cellAmt > 0.001) {
+      float c1 = noise(vLocalPos * 34.0);
+      float c2 = noise(vLocalPos * 71.0 + 5.7);
+      float dimple = smoothstep(0.42, 0.72, c1 * 0.68 + c2 * 0.32);
+      baseCol *= 1.0 - dimple * cellAmt * 0.22;
+    }
+
+    /* --- ТЕПЛО ОТ ТРЕНИЯ ---
+     * Натёртая складка краснеет: подмешиваем тёплый оттенок. */
+    baseCol = mix(baseCol, baseCol * vec3(1.32, 0.74, 0.72), clamp(vHeat, 0.0, 1.0) * 0.55);
+
     diffuseColor.rgb *= baseCol;
   `;
   const SKIN_FRAG_ROUGH = `
     float st2 = clamp(vStretch, 0.0, 1.0);
     roughnessFactor = mix(roughnessFactor, 0.22, st2 * 0.7);
     roughnessFactor = mix(roughnessFactor, 0.12, uWet);
+    // Пот в разогретых складках: локальный влажный блеск
+    roughnessFactor = mix(roughnessFactor, 0.09, clamp(vSweat, 0.0, 1.0) * 0.85);
   `;
   const SKIN_FRAG_EMISSIVE = `
     // Дешёвая имитация SSS: тёплое подповерхностное свечение по краям
@@ -240,8 +392,20 @@
       this.bodyScale = 1;
       this.bodyScaleTarget = 1;
 
+      /* --- v2.0: состояние вторичной динамики --- */
+      this._settle = 0;          // оседание жира при долгом покое
+      this._breath = 0;          // текущая фаза дыхания (-1..1)
+      this._heartbeat = 0;       // импульс сердцебиения
+      this.heartPhase = 0;
+      this._shiver = 0;          // дрожь от холода
+      this._waveQueue = [];      // бегущие волны по телу (без setTimeout)
+
       this.nodes = FF.ZONES.map((z, i) => new SoftNode(z, i));
       this.nodeById = Object.fromEntries(this.nodes.map((n) => [n.zone.id, n]));
+
+      // Живые подсистемы: желудок и хвост-маятник
+      if (FF.DigestionSystem) this.digestion = new FF.DigestionSystem(this);
+      if (FF.TailSystem) this.tail = new FF.TailSystem(this);
 
       this._buildBody();
       this._buildFeatures();
@@ -330,6 +494,14 @@
       this.basePos = new Float32Array(geo.attributes.position.array);
       this.stretchAttr = new THREE.BufferAttribute(new Float32Array(this.vertexCount), 1);
       geo.setAttribute('stretch', this.stretchAttr);
+      // v2.0: нагрев, пот и целлюлит — тоже пер-вершинные, смешиваются
+      // теми же весами зон, что и деформация, поэтому переходы плавные.
+      this.heatAttr = new THREE.BufferAttribute(new Float32Array(this.vertexCount), 1);
+      geo.setAttribute('heat', this.heatAttr);
+      this.sweatAttr = new THREE.BufferAttribute(new Float32Array(this.vertexCount), 1);
+      geo.setAttribute('sweat', this.sweatAttr);
+      this.celluliteAttr = new THREE.BufferAttribute(new Float32Array(this.vertexCount), 1);
+      geo.setAttribute('cellulite', this.celluliteAttr);
 
       const belly = new THREE.Color(this.species.belly);
       const fur = new THREE.Color(this.opts.furColor != null ? this.opts.furColor : this.species.fur);
@@ -347,7 +519,6 @@
       const S = this.species.scale;
       // Протоген строится иначе: визор вместо глаз и морды
       if (this.species.protogen) return this._buildProtogenFeatures();
-      // --- Милое личико: глаза больше, нос меньше, морда милее ---
       const eyeMat = new THREE.MeshStandardMaterial({ color: this.opts.eyeColor, roughness: 0.15, emissive: 0x111111 });
       const scleraMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 });
       const darkMat = new THREE.MeshStandardMaterial({ color: 0x1a1418, roughness: 0.5 });
@@ -355,13 +526,13 @@
       this.eyes = [];
       for (const s of [-1, 1]) {
         const g = new THREE.Group();
-        const sclera = new THREE.Mesh(new THREE.SphereGeometry(0.065, 20, 14), scleraMat); // больше глаза
-        const iris = new THREE.Mesh(new THREE.SphereGeometry(0.044, 16, 12), eyeMat); // больше радужка
-        iris.position.z = 0.032;
-        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.020, 12, 9), darkMat); // милые зрачки
-        pupil.position.z = 0.052;
+        const sclera = new THREE.Mesh(new THREE.SphereGeometry(0.052, 16, 12), scleraMat);
+        const iris = new THREE.Mesh(new THREE.SphereGeometry(0.034, 14, 10), eyeMat);
+        iris.position.z = 0.028;
+        const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.017, 10, 8), darkMat);
+        pupil.position.z = 0.048;
         g.add(sclera, iris, pupil);
-        g.position.set(s * 0.11 * S, 2.08 * S, 0.18 * S); // чуть выше для милости
+        g.position.set(s * 0.10 * S, 2.06 * S, 0.19 * S);
         this.root.add(g);
         this.eyes.push(g);
       }
@@ -375,9 +546,9 @@
         return lid;
       });
 
-      // Нос — милый, маленький
-      this.nose = new THREE.Mesh(new THREE.SphereGeometry(0.025 * S, 12, 10), darkMat);
-      this.nose.position.set(0, 1.995 * S, 0.30 * S);
+      // Нос
+      this.nose = new THREE.Mesh(new THREE.SphereGeometry(0.035 * S, 12, 10), darkMat);
+      this.nose.position.set(0, 1.985 * S, 0.345 * S);
       this.root.add(this.nose);
 
       // Рот (открывается при еде)
@@ -571,12 +742,10 @@
         nd.calories = eff * sp.mult;
         if (instant) nd.growth = nd.growthTarget;
       }
-      // Глобальный масштаб тела: гигант становится огромным.
-      // Теперь растёт и в ширину (x, z), не только вверх (y), чтобы живот был объёмным.
+      // Глобальный масштаб тела: гигант становится по-настоящему огромным.
+      // Кубический корень от массы — физически правдоподобный рост габаритов.
       const massRatio = 1 + cal * FF.CONFIG.growth.caloriesToKg / FF.CONFIG.growth.baseMassKg;
-      const cubic = Math.pow(massRatio, 0.30);
-      // Ширина растёт чуть быстрее, чем высота — жир идёт вширь, а не в небо
-      this.bodyScaleTarget = U.clamp(cubic * (1 + this.stage * 0.06), 1, 3.8);
+      this.bodyScaleTarget = U.clamp(Math.pow(massRatio, 0.30), 1, 3.4);
       if (instant) this.bodyScale = this.bodyScaleTarget;
 
       // Стадия
@@ -629,6 +798,10 @@
       this.stats.fed++;
       if (foodId) this.stats.foodsTried[foodId] = (this.stats.foodsTried[foodId] || 0) + 1;
       this.setEmotion('happy', 3);
+      // Еда сначала попадает в желудок и распирает живот, и только потом
+      // постепенно переходит в жир — см. DigestionSystem.
+      if (this.digestion) this.digestion.addFood(cal);
+      if (this.tail) this.tail.wag(1, 3);
       this._eatAnim(f ? f.size : 'small', gained);
       return gained;
     }
@@ -736,22 +909,60 @@
       return nd;
     }
 
-    /** Волна колыхания от точки (распространяется по узлам) */
+    /**
+     * Волна колыхания от точки.
+     *
+     * v2.0: волна не «телепортируется» во все зоны сразу и не висит на
+     * setTimeout (тот игнорирует паузу игры и мусорит таймерами). Вместо
+     * этого волна живёт во _waveQueue и физически распространяется от
+     * источника со скоростью waveSpeed: сначала вздрагивает живот, затем
+     * грудь, потом шея и подбородки — видно, как импульс бежит по телу.
+     */
     wave(worldPoint, strength = 1) {
       const local = this.root.worldToLocal(worldPoint.clone());
-      const S = this.species.scale;
-      for (const nd of this.nodes) {
-        const d = Math.hypot(local.x - nd.base.x * S, local.y - nd.base.y * S, local.z - nd.base.z * S);
-        const falloff = Math.exp(-d * 1.5);
-        if (falloff < 0.01) continue;
-        const dir = new THREE.Vector3(
-          nd.base.x * S - local.x, nd.base.y * S - local.y + 0.2, nd.base.z * S - local.z
-        ).normalize();
-        // Задержка распространения волны (реалистично)
-        const delay = d * 60;
-        setTimeout(() => nd.impulse(dir, 16 * strength * falloff * nd.growth), delay);
-      }
+      this._waveQueue.push({
+        x: local.x, y: local.y, z: local.z,
+        strength, radius: 0, life: 0,
+      });
+      // Больше 6 волн одновременно не читается глазом — гасим старые
+      if (this._waveQueue.length > 6) this._waveQueue.shift();
       if (strength > 0.8) this.audio && this.audio.jiggle(Math.min(1.5, strength));
+    }
+
+    /** Продвижение фронта всех активных волн */
+    _updateWaves(dt) {
+      if (!this._waveQueue.length) return;
+      const S = this.species.scale;
+      const speed = FF.CONFIG.soft.waveSpeed;
+      const THICK = 0.34;          // толщина фронта волны
+
+      for (let i = this._waveQueue.length - 1; i >= 0; i--) {
+        const w = this._waveQueue[i];
+        const prevR = w.radius;
+        // Фронт замедляется по мере ухода от источника — как затухающая
+        // волна в вязкой среде, а не равномерно расширяющаяся сфера.
+        w.radius += speed * dt / (1 + w.radius * 0.55);
+        w.life += dt;
+
+        for (const nd of this.nodes) {
+          if (nd.growth < 0.02) continue;
+          const dx = nd.base.x * S - w.x;
+          const dy = nd.base.y * S - w.y;
+          const dz = nd.base.z * S - w.z;
+          const d = Math.hypot(dx, dy, dz);
+          // Узел «ловит» волну только когда фронт проходит через него
+          if (d < prevR || d > w.radius + THICK) continue;
+
+          const falloff = Math.exp(-d * 1.15);         // затухание с расстоянием
+          const amp = 16 * w.strength * falloff * nd.growth * nd.jiggleK;
+          if (amp < 0.02) continue;
+          const inv = 1 / (d || 1);
+          _tmpWaveA.set(dx * inv, dy * inv + 0.2, dz * inv).normalize();
+          nd.impulse(_tmpWaveA, amp);
+        }
+        // Волна ушла за габариты тела или выдохлась
+        if (w.radius > 3.2 || w.life > 1.4) this._waveQueue.splice(i, 1);
+      }
     }
 
     /** Прыжок игрока на животе — батут */
@@ -799,6 +1010,55 @@
     setEmotion(e, seconds = 2) { this.emotion = e; this.emotionTimer = seconds; }
 
     /**
+     * ЭМОЦИОНАЛЬНАЯ ФИЗИКА: настроение видно по телу, а не только по морде.
+     *   смех    — живот ходит волнами, каскад подбородков трясётся
+     *   смущение— щёки надуваются, тело чуть поджимается
+     *   блаженство — всё расслаблено, дыхание глубокое
+     *   голод   — живот подтягивается и «урчит» мелкой дрожью
+     */
+    _emotionalPhysics(dt) {
+      const e = this.emotion;
+      if (!e || e === 'neutral') return;
+      const t = performance.now() * 0.001;
+
+      if (e === 'giggle') {
+        /* Смех: собственная фаза, не привязанная к времени старта эмоции,
+         * иначе сила тряски зависела бы от момента, когда фурри засмеялся.
+         * Каждый «ха» — толчок вниз-вперёд по животу, подбородки отвечают
+         * с задержкой на четверть периода: получается каскад. */
+        this._laughPhase = (this._laughPhase || 0) + dt * 9.5;
+        const puls = Math.sin(this._laughPhase);
+        const kick = puls * dt * 60;                 // независимо от частоты кадров
+        for (const id of ['mid_belly', 'upper_belly', 'lower_belly', 'apron_fold']) {
+          const nd = this.nodeById[id];
+          if (!nd || nd.growth < 0.05) continue;
+          const L = nd.layers[nd.layers.length - 1];
+          L.vel.y += kick * 0.38 * nd.growth;
+          L.vel.z += kick * 0.12 * nd.growth;
+        }
+        const lag = Math.sin(this._laughPhase - 1.57);   // каскад подбородков
+        for (const id of ['chin1', 'chin2', 'chin3']) {
+          const nd = this.nodeById[id];
+          if (nd && nd.growth > 0.05) {
+            nd.layers[nd.layers.length - 1].vel.y += lag * dt * 60 * 0.22 * nd.growth;
+          }
+        }
+      } else if (e === 'shy') {
+        // Смущение: щёки наливаются
+        for (const id of ['left_cheek', 'right_cheek']) {
+          const nd = this.nodeById[id];
+          if (nd) nd.offset.z += 0.012 * nd.growth;
+        }
+      } else if (e === 'hungry') {
+        // Урчание: мелкая дрожь в животе
+        const nd = this.nodeById.mid_belly;
+        if (nd && nd.growth > 0.05 && Math.random() < dt * 1.5) {
+          nd.impulse(_tmpWaveA.set(0, -1, 0.3).normalize(), 1.8);
+        }
+      }
+    }
+
+    /**
      * Диалоги отключены: текстовые реплики не показываются.
      * Метод сохранён — он проигрывает голос и держит анимацию рта,
      * поэтому друг остаётся «живым», просто молча.
@@ -831,33 +1091,39 @@
       this.speechTimer -= dt;
       this._updateMobility();
 
-      // ГИПЕР-ФИЗИКА ЖИВОТА: очень тяжёлый массивный свисающий живот + глубокий пупок
-      for (const nd of this.nodes) {
-        if (nd.zone.group === 'belly') {
-          const heavyShake = Math.sin(performance.now() * 0.008 + nd.index * 2.1) * 0.065 * (1 + nd.growth);
-          const heavyShakeZ = Math.sin(performance.now() * 0.006 + nd.index) * 0.045 * (1 + nd.growth);
-          nd.offset.x += heavyShake * dt * 45;
-          nd.offset.z += heavyShakeZ * dt * 45;
-          if (nd.zone.id === 'lower_belly' || nd.zone.id === 'apron_fold') {
-            const extraSag = Math.sin(performance.now() * 0.003 + nd.index) * 0.14 * (0.8 + nd.growth);
-            nd.offset.y -= extraSag * dt * 60;
-            if (nd.offset.y < -0.55) nd.offset.y = -0.55;
-          }
-          if (nd.zone.id === 'navel' && nd.growth > 0.2) {
-            const navelSink = Math.sin(performance.now() * 0.002) * 0.08 * nd.growth;
-            nd.offset.y -= navelSink * dt * 25;
-          }
-        }
-      }
-
-      // Дыхание
-      const breathRate = 0.55 + this.stage * 0.07 + (1 - this.mood) * 0.1;
+      /* --- Дыхание ---
+       * Эмоции реально меняют дыхание: голодный дышит чаще, спящий — реже,
+       * возбуждённый/смеющийся — часто и глубоко. Амплитуда растёт с массой:
+       * у гиганта грудная клетка ходит заметно. */
+      let breathRate = 0.55 + this.stage * 0.07 + (1 - this.mood) * 0.1;
+      let breathDepth = 1;
+      if (this.emotion === 'sleep') { breathRate *= 0.55; breathDepth = 1.5; }
+      else if (this.emotion === 'giggle' || this.emotion === 'bliss') { breathRate *= 1.5; breathDepth = 1.3; }
+      else if (this.hunger > 0.8) { breathRate *= 1.2; }
       this.breathPhase += dt * breathRate;
-      const breath = Math.sin(this.breathPhase * Math.PI * 2);
-      const chest = this.nodeById.upper_chest, belly = this.nodeById.mid_belly;
-      chest.offset.z += breath * dt * 0.35;
-      belly.offset.z += breath * dt * 0.22 * (0.4 + belly.growth);
+      const breath = Math.sin(this.breathPhase * Math.PI * 2) * breathDepth;
+      this._breath = breath;
       if (Math.random() < dt * 0.25 && this.stage > 4) this.audio && this.audio.voice('breath', this.opts.species);
+
+      /* --- Сердцебиение: резкий систолический удар, а не синус --- */
+      this.heartPhase = (this.heartPhase || 0) + dt * (1.05 + this.stage * 0.04);
+      if (this.heartPhase > 1) this.heartPhase -= 1;
+      const hp = this.heartPhase;
+      this._heartbeat = Math.exp(-hp * 14) * 1.6 - Math.exp(-hp * 5) * 0.6;
+
+      /* --- Инерция корпуса: ускорение тела раскачивает жир --- */
+      if (!this._prevPos) this._prevPos = this.root.position.clone();
+      if (!this._prevVel) this._prevVel = new THREE.Vector3();
+      if (!this._accel) this._accel = new THREE.Vector3();
+      if (dt > 1e-4) {
+        const v = _tmpAccelA.copy(this.root.position).sub(this._prevPos).divideScalar(dt);
+        // Ускорение = изменение скорости; сглаживаем, чтобы не ловить рывки
+        const a = _tmpAccelB.copy(v).sub(this._prevVel).divideScalar(dt);
+        if (a.lengthSq() > 6400) a.setLength(80);   // страховка от телепортов
+        this._accel.lerp(a, Math.min(1, dt * 14));
+        this._prevVel.copy(v);
+        this._prevPos.copy(this.root.position);
+      }
 
       // Случайное урчание / реплики
       this.talkTimer -= dt;
@@ -869,13 +1135,60 @@
         else if (this.audio) this.audio.voice(this.species.purr ? 'purr' : 'mur', this.opts.species);
       }
 
+      /* --- Adaptive stiffness: жир «оседает» при долгом стоянии --- */
+      const moving = this._accel.lengthSq() > 0.35;
+      const settleTarget = moving ? 0 : 1;
+      this._settle = U.damp(this._settle || 0, settleTarget, cfg.soft.adaptiveSettle, dt);
+
+      /* --- Погода: в холод тело дрожит, в ясную жару — разморено --- */
+      let weatherJiggle = 1, shiver = 0;
+      const wx = FF.Game && FF.Game.weatherSys;
+      if (wx && FF.WEATHER_TYPES) {
+        const wt = FF.WEATHER_TYPES[wx.current];
+        if (wt) {
+          if (wt.cold) shiver = 0.55;                       // снег — мелкая дрожь
+          else if (wt.name === 'Ясно' && gameHours > 12 && gameHours < 17) weatherJiggle = 0.85;
+          if (wt.wet) this.wet = Math.max(this.wet, 0.65);  // дождь мочит шерсть
+        }
+      }
+      this._shiver = shiver;
+
+      // Контекст тела: его читает каждый узел на своём шаге
+      const ctx = this._physCtx || (this._physCtx = {});
+      ctx.accel = this._accel;
+      ctx.breath = this._breath;
+      ctx.heartbeat = this._heartbeat;
+      ctx.micro = !this._far;               // вдали микро-дрожь не видна — экономим
+      ctx.weather = weatherJiggle;
+
+      // Бегущие волны по телу (до шага физики — импульсы войдут в этот кадр)
+      this._updateWaves(dt);
+      // Эмоции влияют на тело: смех трясёт живот, смущение надувает щёки
+      this._emotionalPhysics(dt);
+      // Желудок распирает живот и урчит; хвост живёт своей инерцией
+      if (this.digestion) this.digestion.update(dt);
+      if (this.tail) this.tail.update(dt);
+
       // Физика узлов
       const sub = cfg.soft.substeps;
       const h = dt / sub;
       for (let s = 0; s < sub; s++) {
-        for (const nd of this.nodes) nd.step(h, cfg.soft.gravitySag, cfg.soft.globalDamping);
+        for (const nd of this.nodes) {
+          nd.settle = this._settle;
+          nd.step(h, cfg.soft.gravitySag, ctx);
+        }
         // Связь соседних узлов (передача волны)
         this._couple(h);
+      }
+
+      // Дрожь от холода — мелкая высокочастотная вибрация всего тела
+      if (shiver > 0.01) {
+        const t = performance.now() * 0.001;
+        for (const nd of this.nodes) {
+          if (nd.growth < 0.05) continue;
+          nd.offset.y += Math.sin(t * 34 + nd.index) * 0.004 * shiver * nd.jiggleK;
+          nd.offset.x += Math.sin(t * 41 + nd.index * 2.3) * 0.003 * shiver * nd.jiggleK;
+        }
       }
 
       // Ноги всегда касаются земли (вес прижимает к поверхности)
@@ -925,14 +1238,34 @@
           return list;
         });
       }
+      /* Связь идёт ПО СЛОЯМ: поверхностный жир соседей увлекает сильнее,
+       * глубокий почти не передаётся — так волна расходится по поверхности,
+       * а не двигает тело целиком.
+       *
+       * Важно: раньше здесь правилась node.vel, но после перехода на слои
+       * это поле — производное (копия скорости глубокого слоя), и правки
+       * затирались на следующем шаге, т.е. связь зон фактически не работала.
+       *
+       * Ещё нюанс: передаём только КОЛЕБАТЕЛЬНУЮ составляющую. Провисание
+       * соседа не должно утягивать вниз зоны, которые по профилю форму
+       * держат (загривок, плечи, «полка» над попой: sag = 0). Иначе жёсткие
+       * зоны медленно сползали вслед за животом. */
       const k = FF.CONFIG.soft.neighborCoupling * dt * 60 * 0.016;
       for (let i = 0; i < this.nodes.length; i++) {
         const a = this.nodes[i];
+        // Сопротивление «утягиванию вниз»: 1 у висящих, ~0 у держащих форму
+        const pull = U.clamp(a.sagK, 0, 1);
         for (const [b, w] of this._neighbors[i]) {
-          const f = (b.vel.x - a.vel.x) * w * k;
-          const g = (b.vel.y - a.vel.y) * w * k;
-          const hh = (b.vel.z - a.vel.z) * w * k;
-          a.vel.x += f; a.vel.y += g; a.vel.z += hh;
+          const nL = Math.min(a.layers.length, b.layers.length);
+          for (let li = 0; li < nL; li++) {
+            const la = a.layers[li], lb = b.layers[li];
+            const kk = w * k * (0.5 + li * 0.45);   // верхние слои связаны сильнее
+            la.vel.x += (lb.vel.x - la.vel.x) * kk;
+            la.vel.z += (lb.vel.z - la.vel.z) * kk;
+            const dvy = (lb.vel.y - la.vel.y) * kk;
+            // Вниз тянем только то, что и должно провисать; вверх — свободно
+            la.vel.y += dvy > 0 ? dvy : dvy * pull;
+          }
         }
       }
     }
@@ -941,32 +1274,47 @@
     _deformMesh() {
       const pos = this.mesh.geometry.attributes.position.array;
       const stretch = this.stretchAttr.array;
+      const heatArr = this.heatAttr.array;
+      const sweatArr = this.sweatAttr.array;
+      const cellArr = this.celluliteAttr.array;
       const base = this.basePos;
       const K = this.K;
-      const disp = [];
-      const tmp = new THREE.Vector3();
+      // Буфер смещений переиспользуем: пересоздание массива каждый кадр
+      // на 60 зон × 60 fps давало заметный мусор для GC.
+      const disp = this._dispBuf || (this._dispBuf = new Float32Array(this.nodes.length * 3));
+      const tmp = _tmpDisp;
       // Предрасчёт смещений узлов
       for (let j = 0; j < this.nodes.length; j++) {
         this.nodes[j].displacement(tmp);
-        disp.push(tmp.x, tmp.y, tmp.z);
+        disp[j * 3] = tmp.x; disp[j * 3 + 1] = tmp.y; disp[j * 3 + 2] = tmp.z;
       }
       const S = this.species.scale;
       for (let i = 0; i < this.vertexCount; i++) {
-        let dx = 0, dy = 0, dz = 0, str = 0;
+        let dx = 0, dy = 0, dz = 0, str = 0, ht = 0, sw = 0, cl = 0;
         for (let k = 0; k < K; k++) {
           const idx = this.wIdx[i * K + k];
           if (idx < 0) break;
           const w = this.wVal[i * K + k];
           dx += disp[idx * 3] * w; dy += disp[idx * 3 + 1] * w; dz += disp[idx * 3 + 2] * w;
-          str += this.nodes[idx].growth * w;
+          const nd = this.nodes[idx];
+          str += nd.growth * w;
+          ht += nd.heat * w;
+          sw += nd.sweat * w;
+          cl += (nd.zone.cellulite || 0) * nd.growth * w;
         }
         pos[i * 3] = base[i * 3] + dx * S;
         pos[i * 3 + 1] = base[i * 3 + 1] + dy * S;
         pos[i * 3 + 2] = base[i * 3 + 2] + dz * S;
         stretch[i] = str;
+        heatArr[i] = ht;
+        sweatArr[i] = sw;
+        cellArr[i] = cl;
       }
       this.mesh.geometry.attributes.position.needsUpdate = true;
       this.stretchAttr.needsUpdate = true;
+      this.heatAttr.needsUpdate = true;
+      this.sweatAttr.needsUpdate = true;
+      this.celluliteAttr.needsUpdate = true;
       // Нормали: свой быстрый пересчёт, реже при удалении от игрока (LOD)
       this._normalTick = (this._normalTick || 0) + 1;
       const every = this._normalLOD || 3;
@@ -1106,23 +1454,21 @@
     _updateClothes() {
       const S = this.species.scale;
       const belly = this.nodeById.mid_belly.growth;
-      const lower = this.nodeById.lower_belly.growth;
-      const apron = this.nodeById.apron_fold.growth;
       const upper = this.nodeById.upper_belly.growth;
       const chest = (this.nodeById.left_moob.growth + this.nodeById.right_moob.growth) * 0.5;
       const glute = (this.nodeById.lower_left_glute.growth + this.nodeById.lower_right_glute.growth) * 0.5;
 
       const stage = this.stage;
       // Рубашка растягивается, затем задирается, затем рвётся (исчезает)
-      const shirtVisible = stage < 5;
+      const shirtVisible = stage < 6;
       this.shirt.visible = shirtVisible;
       if (shirtVisible) {
-        const grow = 1 + belly * 1.3 + lower * 1.0 + apron * 1.35 + upper * 0.50;
-        this.shirt.scale.set(0.42 * S * grow, 0.48 * S * (0.80 + upper * 0.10), 0.38 * S * (1.05 + belly * 0.55));
-        this.shirt.position.y = (1.45 + belly * 0.85 + lower * 0.65 + apron * 0.55) * S;
-        this.shirt.position.z = (belly * 0.55 + lower * 0.35 + apron * 0.35) * S;
-        this.shirt.material.opacity = U.clamp(1 - Math.max(0, stage - 2) * 0.60, 0.08, 1);
-        this.shirt.material.transparent = this.shirt.material.opacity < 0.95;
+        const grow = 1 + belly * 0.75 + upper * 0.3;
+        this.shirt.scale.set(0.47 * S * grow, 0.52 * S * (1 + upper * 0.2), 0.40 * S * (1 + belly * 0.9));
+        this.shirt.position.y = (1.34 + belly * 0.30) * S;  // задирается вверх
+        this.shirt.position.z = belly * 0.22 * S;
+        this.shirt.material.opacity = U.clamp(1 - Math.max(0, stage - 4) * 0.45, 0.12, 1);
+        this.shirt.material.transparent = this.shirt.material.opacity < 1;
       }
       const shortsVisible = stage < 7;
       this.shorts.visible = shortsVisible;
@@ -1160,6 +1506,7 @@
         species: this.opts.species, build: this.opts.build, name: this.opts.name, furColor: this.opts.furColor,
         eyeColor: this.opts.eyeColor, stats: this.stats, permanentMobility: this.permanentMobility,
         pos: this.root.position.toArray(),
+        digestion: this.digestion ? this.digestion.serialize() : null,
       };
     }
     deserialize(d) {
@@ -1171,6 +1518,8 @@
       this.stats = d.stats || this.stats;
       this.permanentMobility = !!d.permanentMobility;
       if (d.pos) this.root.position.fromArray(d.pos);
+      // Старые сейвы поля digestion не содержат — тогда желудок просто пуст
+      if (this.digestion) this.digestion.deserialize(d.digestion);
       this._updateGrowthTargets(true);
       this.bodyScale = this.bodyScaleTarget;
       this.root.scale.setScalar(this.bodyScale);
