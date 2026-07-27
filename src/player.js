@@ -102,11 +102,32 @@
         // Пальцы разжимаются, жир возвращается с «плюхом»
         const nd = hand.grip.node;
         if (nd) { nd.impulse(_tmpDown.set(0, -1, 0), 5); nd.contactPress = 0; }
+        // Ямка расправляется медленно, как густой мёд (см. _updateHandPresses)
+        this.furry.clearHandPress && this.furry.clearHandPress('hand' + hand.side);
         this.audio && this.audio.squish();
         hand.grip = null;
         hand.anim.setPose('rest');
         this._checkClimbState();
       }
+    }
+
+    /**
+     * Отпустить хват одной руки.
+     *
+     * Единая точка выхода: рука может разжаться четырьмя путями (кнопка,
+     * соскальзывание, кончилась стамина, смена режима). Раньше каждый
+     * обнулял grip по-своему, и вмятина от пальцев оставалась на теле
+     * навсегда. Теперь любой путь идёт через этот метод.
+     */
+    _releaseGrip(h) {
+      if (!h.grip) return;
+      h.grip = null;
+      this.furry.clearHandPress && this.furry.clearHandPress('hand' + h.side);
+    }
+
+    /** Отпустить обе руки (падение, смена режима, телепорт) */
+    _releaseAllGrips() {
+      for (const h of this.hands) this._releaseGrip(h);
     }
 
     /** Попытка схватиться за тело / тычок */
@@ -168,6 +189,9 @@
             t: 0,
             dur: 0.30 + Math.min(0.2, bestD / reach * 0.2),   // дальше — дольше
             dir: dir.clone(),
+            // Нормаль поверхности в точке хвата: по ней рука утопает строго
+            // внутрь плоти, а не «к центру тела»
+            normal: best.normal ? best.normal.clone() : null,
           };
           hand.anim.setPose('palm', 1);      // ладонь раскрывается в полёте
           this._checkClimbState();
@@ -347,10 +371,18 @@
       const grips = this.hands.filter((h) => h.grip);
       if (!grips.length) { this.climbing = false; this.mode = 'walk'; return; }
 
-      // Средняя точка захвата в мировых координатах
+      /* Средняя точка захвата в мировых координатах.
+       *
+       * ВАЖНО: тело подтягиваем к точке ВХОДА в кожу (grip.surface), а не
+       * к утопленной кисти (grip.offset). Кисть законно сидит на 45 см
+       * внутри жира — но если тянуть туловище туда же, игрок медленно
+       * въезжает внутрь друга: замер показывал −20 см под кожей во время
+       * лазания и до −1.4 м после отпускания, с ложным «под животом».
+       * Рука в жире, тело снаружи. */
       const anchor = new THREE.Vector3();
       for (const h of grips) {
-        const wp = this.furry.root.localToWorld(h.grip.offset.clone());
+        const local = h.grip.surface || h.grip.offset;
+        const wp = this.furry.root.localToWorld(local.clone());
         anchor.add(wp);
       }
       anchor.divideScalar(grips.length);
@@ -373,6 +405,8 @@
       if (wish.lengthSq() > 0) this.vel.addScaledVector(wish.normalize(), C.climbSpeed * 2.4 * dt * 6);
 
       this.pos.addScaledVector(this.vel, dt);
+      // Страховка: туловище не должно въезжать в плоть глубже допустимого
+      this._keepBodyOutOfFlesh(dt);
 
       // Расход стамины
       const hard = this.keys.ShiftLeft;
@@ -386,13 +420,13 @@
           + (hard ? -0.3 : 0.1);
         g.slip += Math.max(0, slipRate) * dt;
         if (g.slip > 1.2) {
-          h.grip = null;
+          this._releaseGrip(h);
           this.audio && this.audio.squish();
           FF.Game && FF.Game.notify('🖐 Рука соскользнула!', 'warn');
         }
       }
       if (this.stamina <= 0) {
-        this.hands.forEach((h) => (h.grip = null));
+        this._releaseAllGrips();
         FF.Game && FF.Game.notify('😵 Силы кончились — падение!', 'warn');
         this.audio && this.audio.voice('giggle', this.furry.opts.species);
       }
@@ -410,6 +444,30 @@
         const nd = g.node;
         nd.impulse(_tmpDown.set(0, -1, 0), 2.4 * dt * 60 * 0.02);
 
+        /* --- ЯКОРЬ ЖИВЁТ НА КОЖЕ, А НЕ В ЗАСТЫВШЕЙ ТОЧКЕ ---
+         *
+         * Точка хвата хранится в координатах тела, но плоть под рукой
+         * непрерывно мнётся: вмятина от пальцев уводит поверхность
+         * вглубь, и через полсекунды сохранённый якорь оказывался уже
+         * СНАРУЖИ отошедшей кожи (замер: 281 кадр из 600 «рука пробила
+         * деталь насквозь»). Визуально это и выглядит как «руку засосало
+         * сквозь меш».
+         *
+         * Поэтому каждый кадр переставляем точку входа обратно на
+         * поверхность, а кисть — на разрешённую глубину под ней. */
+        if (g.surface && this.furry.physics && this.furry.physics.skinProbe) {
+          const s = g.surface;
+          const pr = this.furry.physics.skinProbe(s.x, s.y, s.z, 3.0);
+          if (pr) {
+            // Возвращаем точку входа ровно на кожу
+            s.set(pr.px, pr.py, pr.pz);
+            // Наружная нормаль → направление вглубь
+            g.dir.set(-pr.nx, -pr.ny, -pr.nz);
+            const allowed = this._clampSinkToFlesh(s, g.dir, g.depth);
+            g.offset.copy(s).addScaledVector(g.dir, allowed);
+          }
+        }
+
         if (g.surface) {
           // Насколько кисть увела складку от её покоя
           const handLocal = this.furry.root.worldToLocal(
@@ -424,6 +482,22 @@
           // Пальцы продолжают вминать плоть, пока держат
           nd.press(_tmpDown.set(0, -0.3, -1).normalize(), g.depth * 1.4 * dt * 6);
           nd.contactPress = Math.min(1, nd.contactPress + dt * 2.5);
+        }
+
+        /* --- ЖИР ВЫТЯГИВАЕТСЯ ВНИЗ ПОД ВЕСОМ ---
+         * Пока игрок висит, ямка под кистью не стоит на месте: она едет
+         * вслед за рукой и вытягивается книзу — складку оттягивает масса
+         * тела. Обновляем прижим каждый кадр. */
+        if (g.dir && g.surface && this.furry.setHandPress) {
+          const hang = this.climbing && !this.onGround ? 1 : 0.45;
+          // Ямка глубже, когда на руке весь вес игрока
+          const depth = g.depth * (0.85 + hang * 0.45);
+          /* Центр — точка ВХОДА в кожу (g.surface), сползающая вниз:
+           * складку оттягивает вес висящего игрока. */
+          const sag = _tmpDown.set(0, -g.depth * 0.55 * hang, 0);
+          const pt = g.surface.clone().add(sag);
+          const holeR = (0.18 + g.depthMeters * 0.85) / this.furry.bodyScale;
+          this.furry.setHandPress('hand' + h.side, pt, g.dir, depth, holeR);
         }
       }
     }
@@ -561,8 +635,7 @@
 
       const bs = f.bodyScale;
       const local = _tmpPull.copy(this.pos);
-      f.root.worldToLocal(local);
-      local.divideScalar(bs);
+      f.root.worldToLocal(local);   // деление на bs уже внутри
       const headY = local.y + this.height / bs;
 
       /* (5) Луч вверх: ищем вершины МЕША прямо над головой.
@@ -631,20 +704,64 @@
           continue;
         }
 
-        /* --- Касание: фиксируем захват --- */
+        /* --- Касание: рука УТОПАЕТ в жир --- */
         const nd = r.node;
-        const soft = nd.soft * nd.growth;
-        const depth = (0.06 + soft * 0.26) * this.furry.bodyScale;
-        const inward = r.local.clone().normalize().multiplyScalar(-depth);
+        const C = FF.CONFIG.player;
+        const bs = this.furry.bodyScale;
+
+        /* Глубина погружения в МЕТРАХ, по мягкости именно этой точки.
+         * Живот у раскормленного друга пускает пальцы на 40+ см,
+         * лапка или бровь — на пять сантиметров. */
+        const soft = U.clamp(nd.soft * nd.growth, 0, 1);
+        // Глубину считает тело: она зависит от КОЛИЧЕСТВА плоти в месте
+        // хвата, а не только от мягкости (см. FurryEngine.grabDepthAt)
+        const sinkM = this.furry.grabDepthAt(nd);
+        // В локальные единицы тела (меш живёт в них, а root.scale = bodyScale)
+        const sinkLocal = sinkM / bs;
+
+        /* Направление вдавливания — внутрь тела по нормали поверхности.
+         * Нормаль берём ту, что вернул рейкаст по мешу: она честнее, чем
+         * «направление от центра», на складках и под животом. */
+        const inwardDir = (r.normal
+          ? _tmpPull.copy(r.normal).applyQuaternion(
+              this.furry.root.quaternion.clone().invert()).normalize().negate()
+          : _tmpPull.copy(r.local).normalize().negate()).clone();
+
+        /* Кисть встаёт НИЖЕ поверхности — она внутри плоти, а не на ней.
+         *
+         * Но глубину проверяем по САМОМУ МЕШУ: на тонких местах (ухо,
+         * хвост, лапка, край фартука) 45 см «вглубь» — это насквозь и
+         * наружу с другой стороны. Ищем, где рука реально упрётся, и
+         * не пускаем её дальше «мышц». */
+        const sinkClamped = this._clampSinkToFlesh(r.local, inwardDir, sinkLocal);
+        const sunken = r.local.clone().addScaledVector(inwardDir, sinkClamped);
+        // Пересчитываем метры: ниже они идут в вмятину и в UI
+        const sinkMeters = sinkClamped * bs;
+
         h.grip = {
           node: nd,
-          offset: r.local.clone().add(inward),   // якорь ВНУТРИ жира
+          offset: sunken,                  // якорь ВНУТРИ жира
           quality: r.quality,
           slip: 0,
-          depth,
+          depth: sinkClamped,
+          depthMeters: sinkMeters,
+          dir: inwardDir,
           surface: r.local.clone(),
         };
         h.reaching = null;
+
+        /* РЕАЛЬНАЯ ВМЯТИНА В МЕШЕ.
+         *
+         * Центр вмятины — точка на ПОВЕРХНОСТИ, а не утопленная кисть:
+         * воронка начинается там, где пальцы вошли в кожу. (Если брать
+         * центром саму кисть, она оказывается глубже радиуса ямки, и
+         * вершины кожи попадают в кольцо валика — тело не вминается,
+         * а вспучивается наружу. Замер это и показал: ямка 0 см, валик 26.)
+         *
+         * Радиус — ладонь (18 см) плюс доля глубины: чем глубже провалилась
+         * рука, тем шире воронка вокруг неё. */
+        const holeR = (0.18 + sinkMeters * 0.85) / bs;
+        this.furry.setHandPress('hand' + h.side, r.local, inwardDir, sinkClamped, holeR);
 
         // Плоть сминается под кистью
         nd.press(r.dir, 0.55 + soft * 0.5);
@@ -713,6 +830,98 @@
     }
 
     /**
+     * Ограничить погружение кисти толщиной плоти в этом месте.
+     *
+     * «Утонуть на 45 см» осмысленно в животе, но не в ухе, хвосте или
+     * крае фартука: там рука прошла бы деталь насквозь и вылезла с
+     * другой стороны — визуально это и есть «засосало внутрь меша».
+     *
+     * Идём лучом от точки входа вглубь и смотрим, где кожа снова
+     * оказывается рядом (то есть где деталь кончается). Дальше этого
+     * места — «мышцы», непробиваемое ядро.
+     *
+     * @param {THREE.Vector3} localPoint — точка входа, координаты тела
+     * @param {THREE.Vector3} inward — направление вглубь (единичное)
+     * @param {number} want — желаемая глубина, локальные единицы
+     * @returns {number} разрешённая глубина, локальные единицы
+     */
+    _clampSinkToFlesh(localPoint, inward, want) {
+      const f = this.furry;
+      if (!f.physics || !f.physics.skinProbe) return want;
+      const bs = f.bodyScale;
+      const probe = _tmpDown;
+      const STEPS = 6;
+      let allowed = want;
+      /* Идём вглубь и следим за ТОЛЩИНОЙ плоти над нами.
+       *
+       * Полагаться на знак skinProbe тут нельзя: у слитых примитивов
+       * четверть нормалей смотрит внутрь, и на глубине знак случайно
+       * переворачивается (замер: −41 см на шаге 5 и +40 см на шаге 6,
+       * хотя рука всё это время была в животе). Из-за ложного «вышли
+       * наружу» кламп срезал глубину, якорь прыгал — и это читалось
+       * как «руку выбросило сквозь меш».
+       *
+       * Надёжный признак сквозного прохода — не знак, а РАЗРЫВ: пока
+       * рука в плоти, расстояние до кожи меняется плавно, шаг за шагом.
+       * Скачок означает, что ближайшей стала уже другая поверхность. */
+      let prev = null;
+      const step = want / STEPS;
+      for (let i = 1; i <= STEPS; i++) {
+        const d = step * i;
+        probe.copy(localPoint).addScaledVector(inward, d);
+        const pr = f.physics.skinProbe(probe.x, probe.y, probe.z, 3.0);
+        if (!pr) continue;
+        const cur = Math.abs(pr.dist);
+        // Плоть кончилась: расстояние до кожи снова начало РАСТИ быстрее шага
+        if (prev !== null && cur - prev > step * 1.5) { allowed = step * (i - 1); break; }
+        prev = cur;
+      }
+      // Минимум 5 см, иначе на тонких местах хвата не будет вовсе
+      const minSink = 0.05 / bs;
+      return Math.max(Math.min(allowed, want), Math.min(minSink, want));
+    }
+
+    /**
+     * Не дать ТУЛОВИЩУ уехать внутрь плоти.
+     *
+     * Руки при хвате законно тонут в жире на 20-45 см — это и просили.
+     * А вот корпус должен оставаться снаружи: иначе игрок «засасывается»
+     * сквозь оболочку, начинает видеть друга изнутри и получает ложные
+     * режимы. Пружина карабканья тянет тело к точке хвата, и без этого
+     * упора она затаскивала его под кожу (замер: до 1.4 м).
+     *
+     * Работает как мягкий, но непробиваемый пол по нормали кожи.
+     */
+    _keepBodyOutOfFlesh(dt) {
+      const f = this.furry;
+      if (!f.physics || !f.physics.skinProbe) return;
+      const bs = f.bodyScale;
+      const local = _tmpPull.copy(this.pos);
+      f.root.worldToLocal(local);
+      const y = local.y + this.height / bs * 0.5;
+      const pr = f.physics.skinProbe(local.x, y, local.z, 3.0);
+      if (!pr) return;
+
+      // Насколько пояс игрока уже под кожей, в метрах
+      const inside = -pr.dist * bs;
+      /* Допуск: корпус может слегка примять жир (как и при ходьбе),
+       * но не тонуть. BODY_SINK_MAX сознательно меньше глубины руки. */
+      const BODY_SINK_MAX = 0.35;
+      if (inside <= BODY_SINK_MAX) return;
+
+      // Выталкиваем по нормали кожи ровно на превышение
+      const push = (inside - BODY_SINK_MAX) / bs;
+      const n = _tmpDown.set(pr.nx, pr.ny, pr.nz);
+      if (n.lengthSq() < 1e-9) return;
+      n.normalize().multiplyScalar(push);
+      n.applyQuaternion(f.root.quaternion);
+      this.pos.add(n);
+      // Гасим составляющую скорости, тянущую дальше внутрь
+      const vn = this.vel.dot(n.normalize());
+      if (vn < 0) this.vel.addScaledVector(n, -vn);
+    }
+
+    /**
      * Игрок реально ЗАМУРОВАН в теле?
      *
      * Наивная проверка «попал в эллипсоид зоны» не годится: рядом с гигантом
@@ -723,22 +932,26 @@
      */
     _isInsideBody() {
       const f = this.furry;
-      if (!f.physics || !f.physics.colliders) return false;
+      if (!f.physics || !f.physics.skinProbe) return false;
       const bs = f.bodyScale;
+
+      /* Спрашиваем САМ МЕШ, а не эллипсоиды зон.
+       *
+       * По эллипсоидам ответ был откровенно неверным: замер показывал
+       * «внутри = true» для точки, лежащей в 1.2 МЕТРА СНАРУЖИ кожи —
+       * перекрывающиеся зоны накрывают воздух вокруг друга. Из-за этого
+       * анти-застревание срабатывало на ровном месте, а проверка
+       * «под животом» получала мусор на вход.
+       *
+       * skinProbe даёт знаковое расстояние до настоящей оболочки. */
       const local = _tmpPull.copy(this.pos);
       f.root.worldToLocal(local);
-      local.divideScalar(bs);
+      // Проверяем пояс игрока: ноги могут утопать в фартуке законно
       const y = local.y + this.height / bs * 0.5;
-      for (const c of f.physics.colliders) {
-        if (c.node.growth < 0.05) continue;
-        const dx = (local.x - c.center.x) / c.radii.x;
-        const dy = (y - c.center.y) / c.radii.y;
-        const dz = (local.z - c.center.z) / c.radii.z;
-        const d2 = dx * dx + dy * dy + dz * dz;
-        // 0.42 по нормированному радиусу ≈ игрок в глубине зоны, а не у края
-        if (d2 < 0.42 * 0.42) return true;
-      }
-      return false;
+      const pr = f.physics.skinProbe(local.x, y, local.z, 3.0);
+      if (!pr) return false;
+      // Замурован = пояс глубже 30 см под кожей
+      return -pr.dist * bs > 0.30;
     }
 
     /**
@@ -768,7 +981,7 @@
 
       this.pos.set(target.x, gy + 0.2, target.z);
       this.vel.set(0, 0, 0);
-      this.hands.forEach((h) => (h.grip = null));
+      this._releaseAllGrips();
       this.climbing = false;
       this.mode = 'walk';
       this.phantom = 0;
@@ -942,7 +1155,7 @@
       }
       this.pos.set(x, y + 0.2, z);
       this.vel.set(0, 0, 0);
-      this.hands.forEach((h) => (h.grip = null));
+      this._releaseAllGrips();
       this.climbing = false; this.mode = 'walk';
     }
 

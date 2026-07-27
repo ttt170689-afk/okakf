@@ -1552,6 +1552,7 @@
         if (FF.Game && FF.Game.world) this.physics.worldCollision(FF.Game.world, dt);
       }
 
+      this._updateHandPresses(dt);
       this._deformMesh();
       this._updateFeatures(dt);
       this._updateClothes();
@@ -1606,6 +1607,176 @@
             const dvy = (lb.vel.y - la.vel.y) * kk;
             // Вниз тянем только то, что и должно провисать; вверх — свободно
             la.vel.y += dvy > 0 ? dvy : dvy * pull;
+          }
+        }
+      }
+    }
+
+    /* ============================================================
+     * ВМЯТИНЫ ОТ РУК — НАСТОЯЩАЯ ДЕФОРМАЦИЯ МЕША
+     * ------------------------------------------------------------
+     * Узел зоны (SoftNode.dent) двигает ВСЮ зону целиком — это годится
+     * для колыхания, но не для пальцев: под кистью должна появляться
+     * локальная ямка сантиметров тридцать, а вокруг неё — валик
+     * вытесненного жира. Поэтому держим отдельный список «прижимов»:
+     * каждый описан точкой на теле (в локальных координатах), глубиной
+     * и радиусом. Меш обрабатывает их после скиннинга.
+     * ============================================================ */
+
+    /**
+     * Поставить/обновить прижим руки.
+     * @param {string} id — кто давит ('hand-1' / 'hand1'), чтобы обновлять свой
+     * @param {THREE.Vector3} localPoint — точка на теле в координатах root
+     * @param {THREE.Vector3} localDir — направление вдавливания (единичное)
+     * @param {number} depth — глубина ямки в локальных единицах
+     * @param {number} radius — радиус влияния в локальных единицах
+     */
+    /**
+     * Средняя длина ребра меша (локальные единицы).
+     *
+     * Нужна, чтобы вмятина не оказалась мельче сетки: у гиганта ребро
+     * доходит до 0.12 лок., и воронка радиусом в одно ребро физически
+     * не имеет вершин, которые можно сдвинуть — замер показывал ямку
+     * 5 см вместо 45. Считается один раз.
+     */
+    _meanEdge() {
+      /* Меряем по ЖИВЫМ позициям, а не по basePos: рост растягивает
+       * оболочку, и на поздних стадиях реальное ребро вдвое-втрое длиннее
+       * исходного. Кешируем ненадолго — форма меняется плавно. */
+      this._edgeTick = (this._edgeTick || 0) + 1;
+      if (this._meanEdgeCache && this._edgeTick % 30 !== 0) return this._meanEdgeCache;
+      const idx = this.mesh.geometry.index.array;
+      const pos = this.mesh.geometry.attributes.position.array;
+      let sum = 0, cnt = 0;
+      // Выборки каждого 7-го треугольника достаточно для средней оценки
+      for (let i = 0; i < idx.length; i += 21) {
+        const a = idx[i] * 3, b = idx[i + 1] * 3;
+        sum += Math.hypot(pos[a] - pos[b], pos[a + 1] - pos[b + 1], pos[a + 2] - pos[b + 2]);
+        cnt++;
+      }
+      this._meanEdgeCache = cnt ? sum / cnt : 0.05;
+      return this._meanEdgeCache;
+    }
+
+    /**
+     * Насколько глубоко рука утонет в этом месте тела, В МЕТРАХ.
+     *
+     * Считать по одной лишь мягкости нельзя: soft у всех зон лежит в
+     * узком диапазоне 0.78..0.99, а growth на поздних стадиях больше
+     * единицы — произведение упиралось в потолок, и лапка пускала
+     * пальцы так же глубоко (45 см), как налитой живот. Нелепо.
+     *
+     * Поэтому глубина = мягкость × КОЛИЧЕСТВО ПЛОТИ в зоне. Плоть
+     * оцениваем через gain (насколько зона вообще способна раздуться)
+     * и текущий рост. Итог совпадает с ТЗ:
+     *   живот/попа 35-45 см · бока/бёдра 25-35 · руки/шея 15-25 ·
+     *   голова/лапки 5-15.
+     *
+     * @param {object} node — SoftNode зоны
+     * @returns {number} глубина погружения, метры
+     */
+    grabDepthAt(node) {
+      const C = FF.CONFIG.player;
+      const min  = C.grabSinkMin  !== undefined ? C.grabSinkMin  : 0.05;
+      const soft = C.grabSinkSoft !== undefined ? C.grabSinkSoft : 0.42;
+      const max  = C.grabSinkMax  !== undefined ? C.grabSinkMax  : 0.45;
+      // Сколько в зоне жира: живот (gain 1.35) против лапки (gain 0.14)
+      const FLESH = 1.6;
+      const fat = U.clamp(Math.abs(node.zone.gain) * node.growth / FLESH, 0, 1);
+      const give = U.clamp(node.soft * fat, 0, 1);
+      return Math.min(max, min + give * soft);
+    }
+
+    setHandPress(id, localPoint, localDir, depth, radius) {
+      /* Воронка не может быть уже сетки: иначе внутрь неё не попадает
+       * ни одной вершины и «вмятина» существует только на бумаге
+       * (замер на гиганте давал 5 см вместо 45).
+       *
+       * 2.0 ребра — минимум, при котором в ямку попадает несколько
+       * десятков вершин и косинусный профиль читается как гладкий
+       * кратер, а не как единичный шип. */
+      const minR = this._meanEdge() * 2.0;
+      if (radius < minR) radius = minR;
+      this.handPresses = this.handPresses || [];
+      let p = this.handPresses.find((h) => h.id === id);
+      if (!p) { p = { id: id, target: 0, cur: 0 }; this.handPresses.push(p); }
+      p.point = p.point || new THREE.Vector3();
+      p.dir = p.dir || new THREE.Vector3();
+      p.point.copy(localPoint);
+      p.dir.copy(localDir);
+      p.target = depth;
+      p.radius = radius;
+      return p;
+    }
+
+    /** Убрать прижим: жир возвращается не мгновенно, а «густым мёдом» */
+    clearHandPress(id) {
+      if (!this.handPresses) return;
+      const p = this.handPresses.find((h) => h.id === id);
+      if (p) p.target = 0;
+    }
+
+    /** Плавное нарастание/спад глубины вмятин */
+    _updateHandPresses(dt) {
+      if (!this.handPresses || !this.handPresses.length) return;
+      for (let i = this.handPresses.length - 1; i >= 0; i--) {
+        const p = this.handPresses[i];
+        // Вдавливается быстро (пальцы входят), возвращается медленно (мёд)
+        const speed = p.target > p.cur ? 9 : 2.2;
+        p.cur = U.damp(p.cur, p.target, speed, dt);
+        // Полностью расправилось — забываем
+        if (p.target <= 0 && p.cur < 0.0015) this.handPresses.splice(i, 1);
+      }
+    }
+
+    /**
+     * Применить вмятины к мешу.
+     *
+     * Профиль: внутри радиуса — гладкая ямка (косинус), в кольце снаружи —
+     * ВАЛИК вытесненного жира. Объём приблизительно сохраняется: сколько
+     * плоти ушло вглубь, столько выперло по краям.
+     */
+    _applyHandPresses() {
+      const list = this.handPresses;
+      if (!list || !list.length) return;
+      const pos = this.mesh.geometry.attributes.position.array;
+      const n = this.vertexCount;
+
+      for (let pi = 0; pi < list.length; pi++) {
+        const p = list[pi];
+        if (p.cur < 0.001 || !p.point) continue;
+        const R = p.radius;
+        const R2 = R * R;
+        // Валик живёт в кольце от R до BULGE_R
+        const BR = R * 1.85, BR2 = BR * BR;
+        const px = p.point.x, py = p.point.y, pz = p.point.z;
+        const dx0 = p.dir.x, dy0 = p.dir.y, dz0 = p.dir.z;
+
+        for (let v = 0; v < n; v++) {
+          const i = v * 3;
+          const ddx = pos[i] - px, ddy = pos[i + 1] - py, ddz = pos[i + 2] - pz;
+          const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+          if (d2 > BR2) continue;
+          const d = Math.sqrt(d2);
+
+          if (d2 <= R2) {
+            /* ЯМКА. Косинусный профиль: в центре — полная глубина,
+             * к краю плавно сходит на нет, без резкой ступеньки. */
+            const t = d / R;
+            const fall = 0.5 + 0.5 * Math.cos(t * Math.PI);   // 1 в центре → 0 на краю
+            const k = p.cur * fall;
+            pos[i]     += dx0 * k;
+            pos[i + 1] += dy0 * k;
+            pos[i + 2] += dz0 * k;
+          } else {
+            /* ВАЛИК вытесненного жира: плоть выдавливается НАРУЖУ,
+             * против направления нажатия. Максимум сразу за краем ямки. */
+            const t = (d - R) / (BR - R);                     // 0 у края ямки → 1 снаружи
+            const bump = Math.sin((1 - t) * Math.PI * 0.85);
+            const k = p.cur * bump * 0.30;                    // валик ниже ямки
+            pos[i]     -= dx0 * k;
+            pos[i + 1] -= dy0 * k;
+            pos[i + 2] -= dz0 * k;
           }
         }
       }
@@ -1688,6 +1859,10 @@
        * сглаживание снова разведёт вершины стыков. */
       const sm = FF.CONFIG.render.meshSmooth;
       if (sm > 0) { this._smoothMesh(sm); if (sm > 0.3) this._smoothMesh(sm * 0.6); }
+      /* Вмятины от рук — ПОСЛЕ сглаживания: иначе лапласиан немедленно
+       * размажет ямку под пальцами обратно в ровную поверхность.
+       * И до сшивки швов, чтобы вмятина на стыке примитивов не рвала кожу. */
+      this._applyHandPresses();
       this._weldPositions();
       this.mesh.geometry.attributes.position.needsUpdate = true;
       this.stretchAttr.needsUpdate = true;

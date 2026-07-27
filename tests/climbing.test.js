@@ -324,5 +324,364 @@ console.log('=== 10. IDLE-ЖИЗНЬ (никогда не замирает) ==='
   t('есть потягивание', kinds.has('stretch'));
 }
 
+
+/* ============================================================
+ * 11. КОЛЛИЗИЯ НЕ БОЛЬШЕ МЕША (регрессия «невидимая стенка»)
+ * ------------------------------------------------------------
+ * Баг: коллайдеры жили в локальных единицах тела, но worldCenter
+ * умножался на bodyScale ВРУЧНУЮ, хотя root.scale уже равен bodyScale.
+ * Центр улетал на bs² — у гиганта коллайдер живота оказывался в 20 раз
+ * дальше кожи, и игрок упирался в пустоту за десятки метров от друга.
+ * ============================================================ */
+console.log('=== 11. КОЛЛИЗИЯ СОВПАДАЕТ С МЕШЕМ (нет воздушной стенки) ===');
+{
+  const R = FF.CONFIG.player.radius, H = FF.CONFIG.player.height;
+
+  /** Истинный зазор от капсулы игрока до кожи (метры). <0 — уже в плоти */
+  function skinGap(f, p) {
+    const pos = f.mesh.geometry.attributes.position.array;
+    const m = f.mesh.matrixWorld;
+    const v = new THREE.Vector3();
+    const ay = p.y + R, by = p.y + H - R;
+    let best = Infinity;
+    for (let i = 0; i < pos.length; i += 3) {
+      v.set(pos[i], pos[i + 1], pos[i + 2]).applyMatrix4(m);
+      const cy = Math.max(ay, Math.min(by, v.y));
+      const d = Math.hypot(v.x - p.x, v.y - cy, v.z - p.z);
+      if (d < best) best = d;
+    }
+    return best - R;
+  }
+
+  for (const cal of [0, 120000, 900000]) {
+    const f = new FF.FurryEngine(scene,
+      { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio);
+    f.calories = cal; f._updateGrowthTargets(true); f.root.position.set(0, 0, 0);
+    for (let i = 0; i < 60; i++) f.update(dt, 12);
+    f.root.updateMatrixWorld(true); f.mesh.updateMatrixWorld(true);
+    const bs = f.bodyScale;
+
+    // 1. Центр коллайдера обязан лежать внутри габаритов меша
+    f.mesh.geometry.computeBoundingBox();
+    const bb = f.mesh.geometry.boundingBox;
+    const belly = f.physics.byId['mid_belly'];
+    const insideBox = belly.center.x >= bb.min.x - 0.01 && belly.center.x <= bb.max.x + 0.01
+                   && belly.center.y >= bb.min.y - 0.01 && belly.center.y <= bb.max.y + 0.01
+                   && belly.center.z >= bb.min.z - 0.01 && belly.center.z <= bb.max.z + 0.01;
+    t('bs=' + bs.toFixed(2) + ': центр коллайдера живота внутри меша', insideBox,
+      'center.z=' + belly.center.z.toFixed(2) + ' меш до ' + bb.max.z.toFixed(2));
+
+    // 2. worldCenter не должен улетать в bs раз дальше (тот самый баг)
+    const expect = belly.center.clone();
+    f.root.localToWorld(expect);
+    const drift = belly.worldCenter.distanceTo(expect);
+    t('bs=' + bs.toFixed(2) + ': worldCenter без двойного масштаба', drift < 0.01,
+      'расхождение ' + drift.toFixed(3) + ' м');
+
+    // 3. Идём на друга — останавливаться можно только у самой кожи
+    const bw = belly.worldCenter.clone();
+    const footY = Math.max(0, bw.y - H * 0.5);
+    let worst = -Infinity;
+    for (let k = 0; k < 8; k++) {
+      const ang = k / 8 * Math.PI * 2;
+      const dx = -Math.cos(ang), dz = -Math.sin(ang);
+      const p = new THREE.Vector3(-dx * 30, footY, -dz * 30);
+      const v = new THREE.Vector3();
+      let prev = p.x * dx + p.z * dz, stalled = 0;
+      for (let i = 0; i < 4000; i++) {
+        p.x += dx * 0.02; p.z += dz * 0.02;
+        v.set(dx * 1.6, 0, dz * 1.6);
+        f.physics.resolvePlayer(p, v, R, H, dt);
+        const proj = p.x * dx + p.z * dz;
+        const adv = proj - prev; prev = proj;
+        if (adv < 0.004) {
+          if (++stalled >= 12) { worst = Math.max(worst, skinGap(f, p)); break; }
+        } else stalled = 0;
+        if (Math.hypot(p.x, p.z) < 0.08) break;   // прошёл — стенки нет
+      }
+    }
+    // Порог 0.35 м: половина ребра меша у гиганта ≈ 0.28 м, точнее не измерить
+    t('bs=' + bs.toFixed(2) + ': нет воздушной стенки вокруг друга',
+      worst === -Infinity || worst < 0.35,
+      worst === -Infinity ? 'нигде не упёрся' : 'худший зазор ' + worst.toFixed(2) + ' м');
+    scene.remove(f.root);
+  }
+}
+
+/* ============================================================
+ * 12. РУКА УТОПАЕТ В ЖИРЕ, МЕШ ДЕФОРМИРУЕТСЯ
+ * ------------------------------------------------------------
+ * Раньше кисть просто касалась поверхности. Теперь при хвате она
+ * погружается на 20-45 см (по мягкости места), в меше появляется
+ * настоящая ямка, вокруг — валик вытесненного жира, а после
+ * отпускания форма возвращается медленно, как густой мёд.
+ * ============================================================ */
+console.log('=== 12. ПОГРУЖЕНИЕ РУК В ЖИР ПРИ ХВАТЕ ===');
+{
+  const C = FF.CONFIG.player;
+  t('глубина погружения настраивается в конфиге',
+    C.grabSinkMin !== undefined && C.grabSinkSoft !== undefined && C.grabSinkMax !== undefined,
+    'min=' + C.grabSinkMin + ' soft=' + C.grabSinkSoft + ' max=' + C.grabSinkMax);
+
+  const { f, p } = setup(900000);
+  f.root.updateMatrixWorld(true); f.mesh.updateMatrixWorld(true);
+  const bs = f.bodyScale;
+  const belly = f.physics.byId['mid_belly'];
+  const bw = belly.worldCenter.clone();
+
+  // Встаём перед животом, смотрим в -Z
+  const skin = f.physics.raycastMesh(
+    new THREE.Vector3(bw.x, bw.y, bw.z + 80), new THREE.Vector3(0, 0, -1), 160);
+  const front = skin ? skin.point.z : bw.z + 2;
+  p.pos.set(bw.x, Math.max(0, bw.y - FF.CONFIG.player.eyeHeight), front + 1.0);
+  p.yaw = 0; p.pitch = 0; p.frozen = false;
+  p._updateCamera(0.016);
+  p.keys.ShiftLeft = true; p.mouse.left = true;
+  p._tryGrabOrPoke(p.hands[0]);
+
+  const h = p.hands[0];
+  t('замах начался', !!h.reaching);
+  let frames = 0;
+  while (h.reaching && frames < 120) { p._updateReaching(dt); frames++; }
+  t('захват зафиксирован', !!h.grip);
+
+  if (h.grip) {
+    const cm = h.grip.depthMeters * 100;
+    t('рука утонула в живот на 20-45 см', cm >= 20 && cm <= 45.5,
+      cm.toFixed(0) + ' см (зона ' + h.grip.node.zone.id + ')');
+
+    const pr = f.handPresses && f.handPresses.find((x) => x.id === 'hand' + h.side);
+    t('прижим зарегистрирован в теле', !!pr);
+
+    // Меряем настоящую деформацию оболочки
+    const before = Float32Array.from(f.mesh.geometry.attributes.position.array);
+    for (let i = 0; i < 30; i++) f.update(dt, 12);
+    const after = f.mesh.geometry.attributes.position.array;
+    let dent = 0, bulge = 0, moved = 0;
+    const d = pr.dir;
+    for (let v = 0; v < f.vertexCount; v++) {
+      const i = v * 3;
+      const mv = ((after[i] - before[i]) * d.x
+                + (after[i + 1] - before[i + 1]) * d.y
+                + (after[i + 2] - before[i + 2]) * d.z) * bs;
+      if (Math.abs(mv) > 0.004) moved++;
+      if (mv > dent) dent = mv;
+      if (-mv > bulge) bulge = -mv;
+    }
+    t('в меше появилась ЯМКА глубиной от 20 см', dent > 0.20,
+      (dent * 100).toFixed(1) + ' см');
+    t('вокруг ямки — ВАЛИК вытесненного жира', bulge > 0.02,
+      (bulge * 100).toFixed(1) + ' см');
+    t('деформация захватила заметный участок кожи', moved > 20,
+      moved + ' вершин');
+
+    // Отпускаем: форма обязана возвращаться, но не мгновенно
+    p.mouse.left = false;
+    p.onMouseUp(0);
+    t('после отпускания хват снят', !h.grip);
+    const pr2 = f.handPresses && f.handPresses.find((x) => x.id === 'hand' + h.side);
+    t('ямка гаснет плавно, а не исчезает мгновенно',
+      !pr2 || (pr2.target === 0 && pr2.cur > 0.001),
+      pr2 ? 'осталось ' + (pr2.cur * bs * 100).toFixed(1) + ' см' : 'уже расправилась');
+
+    let steps = 0;
+    while (f.handPresses && f.handPresses.length && steps < 60 * 8) { f.update(dt, 12); steps++; }
+    const sec = steps / 60;
+    t('форма полностью восстановилась (густой мёд, 0.5-6 с)', sec > 0.5 && sec < 6,
+      'за ' + sec.toFixed(1) + ' с');
+  }
+}
+
+/* Мягкие места пускают пальцы глубже, чем твёрдые — это и есть
+ * «динамический расчёт глубины по зоне» из ТЗ. */
+console.log('=== 13. ГЛУБИНА ПОГРУЖЕНИЯ ЗАВИСИТ ОТ МЯГКОСТИ ЗОНЫ ===');
+{
+  const C = FF.CONFIG.player;
+  const f = new FF.FurryEngine(scene,
+    { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio);
+  f.calories = 900000; f._updateGrowthTargets(true);
+  for (let i = 0; i < 60; i++) f.update(dt, 12);
+
+  const depth = (id) => f.grabDepthAt(f.nodeById[id]) * 100;
+  const belly = depth('mid_belly'), paw = depth('left_paw'), thigh = depth('outer_left_thigh');
+  t('живот мягче лапки', belly > paw + 10,
+    'живот ' + belly.toFixed(0) + ' см, лапка ' + paw.toFixed(0) + ' см');
+  t('лапка/голова — мелкое погружение (<25 см)', paw < 25, paw.toFixed(0) + ' см');
+  t('глубина нигде не превышает потолок', belly <= C.grabSinkMax * 100 + 0.1,
+    belly.toFixed(0) + ' см при потолке ' + (C.grabSinkMax * 100) + ' см');
+  t('бедро между лапкой и животом', thigh > paw && thigh <= belly,
+    'бедро ' + thigh.toFixed(0) + ' см');
+}
+
+
+/* ============================================================
+ * 14. РУКИ НЕ ПРОВАЛИВАЮТСЯ СКВОЗЬ МЕШ, ТЕЛО НЕ ЗАСАСЫВАЕТ
+ * ------------------------------------------------------------
+ * Баг: пружина карабканья тянула ТУЛОВИЩЕ к утопленной кисти
+ * (grip.offset — 45 см под кожей), и игрок медленно въезжал внутрь
+ * друга: до −1.4 м под кожей после отпускания. Оттуда система
+ * видела плоть над головой и включала ложный режим «под животом».
+ *
+ * Плюс _isInsideBody() врал: он считал по эллипсоидам зон и выдавал
+ * «внутри» для точки в 1.2 м СНАРУЖИ кожи.
+ * ============================================================ */
+console.log('=== 14. РУКА В ЖИРЕ, ТЕЛО СНАРУЖИ ===');
+{
+  const H = FF.CONFIG.player.height;
+
+  const f = new FF.FurryEngine(scene,
+    { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio);
+  f.calories = 900000; f._updateGrowthTargets(true); f.root.position.set(0, 0, 0);
+  for (let i = 0; i < 60; i++) f.update(dt, 12);
+  f.root.updateMatrixWorld(true); f.mesh.updateMatrixWorld(true);
+  const bs = f.bodyScale;
+  const cam = new THREE.PerspectiveCamera(75, 1.6, 0.1, 1000);
+  const p = new FF.PlayerController(cam, world, f, audio);
+
+  /* Глубина точки под кожей, метры (>0 — внутри плоти) */
+  const depthAt = (localV) => {
+    const pr = f.physics.skinProbe(localV.x, localV.y, localV.z, 3.0);
+    return pr ? -pr.dist * bs : null;
+  };
+  /* Глубина ПОЯСА игрока — ровно то, что смотрит _isInsideBody */
+  const waistDepth = () => {
+    const l = f.root.worldToLocal(p.pos.clone());
+    return depthAt(new THREE.Vector3(l.x, l.y + H / bs * 0.5, l.z));
+  };
+  /* Точка внутри меша? Считаем пересечения луча наружу: нечётное = внутри.
+   * Знак skinProbe для этого не годится — у слитых примитивов четверть
+   * нормалей смотрит внутрь, и на глубине знак случайно переворачивается
+   * (сверка показала: 9 ложных «снаружи» из 25 там, где рука в плоти). */
+  const insideMesh = (worldPt) => {
+    const dirs = [new THREE.Vector3(1, 0.13, 0.07),
+                  new THREE.Vector3(-0.09, 1, 0.11),
+                  new THREE.Vector3(0.05, 0.08, 1)];
+    let votes = 0;
+    for (const d of dirs) {
+      d.normalize();
+      let hits = 0, org = worldPt.clone(), guard = 0;
+      while (guard++ < 40) {
+        const hh = f.physics.raycastMesh(org, d, 400);
+        if (!hh) break;
+        hits++; org = hh.point.clone().addScaledVector(d, 0.01);
+      }
+      if (hits % 2 === 1) votes++;
+    }
+    return votes >= 2;
+  };
+
+  /* Независимая проверка «есть ли плоть над головой» */
+  const trulyUnder = () => {
+    const arr = f.mesh.geometry.attributes.position.array;
+    const w = new THREE.Vector3();
+    let n = 0;
+    for (let v = 0; v < f.vertexCount; v++) {
+      const i = v * 3;
+      w.set(arr[i], arr[i + 1], arr[i + 2]);
+      f.mesh.localToWorld(w);
+      if (w.y <= p.pos.y + H) continue;
+      const dx = w.x - p.pos.x, dz = w.z - p.pos.z;
+      if (dx * dx + dz * dz > 0.55 * 0.55) continue;
+      if (++n >= 3) return true;
+    }
+    return false;
+  };
+
+  // --- _isInsideBody обязан согласоваться с настоящей кожей ---
+  const belly = f.physics.byId['mid_belly'];
+  const bw = belly.worldCenter.clone();
+  let mismatch = 0;
+  for (const off of [4.0, 2.5, 1.5, 0.8, 0.0, -1.2, -2.0]) {
+    p.pos.set(bw.x, bw.y - H * 0.5, bw.z + off);
+    const d = waistDepth();
+    if (d === null) continue;
+    if (p._isInsideBody() !== (d > 0.30)) mismatch++;
+  }
+  t('_isInsideBody согласован с мешем (не врёт по эллипсоидам)',
+    mismatch === 0, mismatch + ' расхождений из 7');
+
+  // --- Хватаемся за живот и лезем ---
+  const skin = f.physics.raycastMesh(
+    new THREE.Vector3(bw.x, bw.y, bw.z + 80), new THREE.Vector3(0, 0, -1), 160);
+  p.pos.set(bw.x, Math.max(0, bw.y - FF.CONFIG.player.eyeHeight), skin.point.z + 1.0);
+  p.yaw = 0; p.pitch = 0; p.frozen = false;
+  p._updateCamera(0.016);
+  p.keys.ShiftLeft = true; p.mouse.left = true;
+  p._tryGrabOrPoke(p.hands[0]);
+  const h = p.hands[0];
+  let n = 0;
+  while (h.reaching && n < 120) { p._updateReaching(dt); n++; }
+  t('захват состоялся', !!h.grip);
+
+  if (h.grip) {
+    t('кисть сидит ВНУТРИ жира сразу после хвата',
+      depthAt(h.grip.offset) > 0.15,
+      (depthAt(h.grip.offset) * 100).toFixed(0) + ' см под кожей');
+    t('точка входа лежит НА коже, а не внутри',
+      Math.abs(depthAt(h.grip.surface)) < 0.15,
+      (depthAt(h.grip.surface) * 100).toFixed(0) + ' см');
+
+    // Лезем 250 кадров, потом отпускаем и падаем
+    p.keys.KeyW = true;
+    let falseUB = 0, bodyDeep = 0, handOut = 0, maxBody = -99, handChecks = 0;
+    for (let i = 0; i < 400; i++) {
+      p.update(dt); f.update(dt, 12);
+      if (i === 250) { p.mouse.left = false; p.onMouseUp(0); p.keys.KeyW = false; }
+      const wd = waistDepth();
+      if (wd !== null) {
+        if (wd > maxBody) maxBody = wd;
+        if (wd > 0.60) bodyDeep++;          // туловище утонуло — это баг
+      }
+      if (p.mode === 'underbelly' && !trulyUnder()) falseUB++;
+      if (i % 10 === 0 && h.grip) {
+        handChecks++;
+        if (!insideMesh(f.root.localToWorld(h.grip.offset.clone()))) handOut++;
+      }
+    }
+    t('туловище НЕ засасывает внутрь тела', bodyDeep === 0,
+      'глубже 60 см: ' + bodyDeep + ' кадров, максимум ' + (maxBody * 100).toFixed(0) + ' см');
+    /* Допускаем единичные кадры на самой границе: выборка вершин в
+     * _hasBellyOverhead идёт с шагом 3, и на краю нависания счётчик
+     * может дрогнуть на кадр. Массового ложного режима быть не должно. */
+    t('нет ложного режима «под животом»', falseUB <= 3,
+      falseUB + ' ложных кадров из 400');
+    t('кисть всё время остаётся ВНУТРИ плоти (лучевой тест)',
+      handOut === 0, handOut + ' проверок снаружи из ' + handChecks);
+  }
+}
+
+/* Кламп глубины: на тонких деталях рука не проходит насквозь */
+console.log('=== 15. ГЛУБИНА ХВАТА ОГРАНИЧЕНА ТОЛЩИНОЙ ПЛОТИ ===');
+{
+  const f = new FF.FurryEngine(scene,
+    { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio);
+  f.calories = 900000; f._updateGrowthTargets(true);
+  for (let i = 0; i < 60; i++) f.update(dt, 12);
+  f.root.updateMatrixWorld(true); f.mesh.updateMatrixWorld(true);
+  const bs = f.bodyScale;
+  const cam = new THREE.PerspectiveCamera(75, 1.6, 0.1, 1000);
+  const p = new FF.PlayerController(cam, world, f, audio);
+
+  t('кламп глубины существует', typeof p._clampSinkToFlesh === 'function');
+  t('страховка туловища существует', typeof p._keepBodyOutOfFlesh === 'function');
+
+  // В толстом животе кламп не должен резать глубину
+  const belly = f.physics.byId['mid_belly'];
+  const bw = belly.worldCenter.clone();
+  const hit = f.physics.raycastMesh(
+    new THREE.Vector3(bw.x, bw.y, bw.z + 80), new THREE.Vector3(0, 0, -1), 160);
+  if (hit) {
+    const loc = f.root.worldToLocal(hit.point.clone());
+    const inward = hit.normal.clone()
+      .applyQuaternion(f.root.quaternion.clone().invert()).normalize().negate();
+    const want = 0.45 / bs;
+    const got = p._clampSinkToFlesh(loc, inward, want);
+    t('в толстом животе рука тонет на полную глубину',
+      got > want * 0.7, (got * bs * 100).toFixed(0) + ' см из ' + (want * bs * 100).toFixed(0));
+    t('кламп никогда не превышает запрошенное', got <= want + 1e-9);
+    t('кламп не обнуляет хват', got > 0);
+  }
+}
+
 console.log('\nВСЕГО: ' + pass + ' пройдено, ' + fail + ' провалено');
 if (fail) process.exitCode = 1;

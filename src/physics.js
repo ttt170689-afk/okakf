@@ -115,8 +115,13 @@
         this.radii.copy(this.fitted.radii);
       }
 
-      // Мир
-      this.worldCenter.copy(this.center).multiplyScalar(bs);
+      /* Мир.
+       *
+       * ВАЖНО (баг двойного масштаба): root.scale уже равен bodyScale,
+       * поэтому localToWorld САМ умножает координату на bs. Прошлый код
+       * умножал ещё и вручную — центр улетал на bs² и у гиганта (bs≈4.6)
+       * оказывался в 20 раз дальше кожи. Это и была «невидимая стена». */
+      this.worldCenter.copy(this.center);
       this.furry.root.localToWorld(this.worldCenter);
       this.worldRadius = Math.max(this.radii.x, this.radii.y, this.radii.z) * bs;
       this.contacts = 0;
@@ -183,6 +188,9 @@
   const CENTER_FIT = 0.15;
   /* Общий поджим базового радиуса зоны под визуальную оболочку. */
   const BASE_FIT = 0.85;
+  /* «Толщина шерсти»: контакт считается только когда просвет до кожи
+   * меньше сантиметра. Аналог skinWidth = 0.01 из ТЗ. */
+  const SKIN_TOUCH = 0.01;
 
   const _tmpMat = new THREE.Matrix4();
   const _tmpV1 = new THREE.Vector3();
@@ -213,26 +221,46 @@
       if (!f.wIdx || !f.mesh) return;
       const K = f.K, n = f.vertexCount;
       const counts = new Int32Array(f.nodes.length);
-      // Первый проход — сколько вершин у каждой зоны (только доминирующий вес)
+      /* Первый проход — сколько вершин у каждой зоны.
+       *
+       * Раньше вершина засчитывалась только своей ДОМИНИРУЮЩЕЙ зоне и
+       * только при весе > 0.34. Узкие зоны (хвост, пупок, борозда спины,
+       * подгрудные складки — 7 штук) не набирали ни одной вершины,
+       * оставались без подгонки и жили по старым формулам: их эллипсоид
+       * выпирал за кожу и держал игрока в полуметре от хвоста.
+       *
+       * Теперь зона забирает вершину, если её вес заметен (>0.12) —
+       * пусть даже она не главная. Так каждая зона получает облако
+       * вершин и калибруется по настоящей оболочке. */
       const owner = new Int32Array(n).fill(-1);
+      const OWN_W = 0.12;
       for (let v = 0; v < n; v++) {
-        const idx = f.wIdx[v * K];          // веса отсортированы по убыванию
-        if (idx < 0) continue;
-        if (f.wVal[v * K] < 0.34) continue; // слабое влияние не считаем
-        owner[v] = idx;
-        counts[idx]++;
+        for (let k = 0; k < K; k++) {
+          const idx = f.wIdx[v * K + k];
+          if (idx < 0) break;
+          if (f.wVal[v * K + k] < OWN_W) continue;
+          counts[idx]++;
+        }
+        // Доминирующая зона нужна для обратной совместимости (owner)
+        const dom = f.wIdx[v * K];
+        if (dom >= 0 && f.wVal[v * K] >= 0.34) owner[v] = dom;
       }
       // Второй проход — раскладываем по спискам
       this.zoneVerts = [];
       for (let i = 0; i < f.nodes.length; i++) {
         this.zoneVerts.push(counts[i] > 0 ? new Int32Array(counts[i]) : null);
       }
+      // Второй проход раскладывает вершины по тем же правилам, что и счёт
       const fill = new Int32Array(f.nodes.length);
       for (let v = 0; v < n; v++) {
-        const o = owner[v];
-        if (o < 0) continue;
-        this.zoneVerts[o][fill[o]++] = v;
+        for (let k = 0; k < K; k++) {
+          const idx = f.wIdx[v * K + k];
+          if (idx < 0) break;
+          if (f.wVal[v * K + k] < OWN_W) continue;
+          this.zoneVerts[idx][fill[idx]++] = v;
+        }
       }
+      this._vertOwner = owner;   // доминирующая зона вершины (для прочих нужд)
       this._ownershipReady = true;
     }
 
@@ -259,21 +287,213 @@
         cx *= inv; cy *= inv; cz *= inv;
         // Полуоси — среднеквадратичный охват (устойчивее максимума к выбросам)
         let sx = 0, sy = 0, sz = 0;
+        // ...и одновременно реальный габарит зоны по каждой оси
+        let mx = 0, my = 0, mz = 0;
         for (let k = 0; k < list.length; k++) {
           const v = list[k] * 3;
           const dx = pos[v] - cx, dy = pos[v + 1] - cy, dz = pos[v + 2] - cz;
           sx += dx * dx; sy += dy * dy; sz += dz * dz;
+          const ax = dx < 0 ? -dx : dx, ay = dy < 0 ? -dy : dy, az = dz < 0 ? -dz : dz;
+          if (ax > mx) mx = ax;
+          if (ay > my) my = ay;
+          if (az > mz) mz = az;
         }
         // 1.9σ охватывает почти весь объём зоны, не выпирая за кожу
         const K_SIGMA = 1.9;
         c.fitted = c.fitted || { center: new THREE.Vector3(), radii: new THREE.Vector3() };
         c.fitted.center.set(cx, cy, cz);
+        /* Жёсткий потолок: эллипсоид НЕ ШИРЕ собственных вершин.
+         *
+         * На вытянутых и редких зонах (хвост, предплечье) 1.9σ давало
+         * полуось больше реального габарита, и коллайдер выступал в пустоту
+         * на 10-20 см — игрок упирался в воздух рядом с хвостом. Ограничение
+         * по максимальному отклонению делает такое невозможным: коллайдер
+         * всегда вписан в облако своих вершин. */
         c.fitted.radii.set(
-          Math.max(0.04, Math.sqrt(sx * inv) * K_SIGMA),
-          Math.max(0.04, Math.sqrt(sy * inv) * K_SIGMA),
-          Math.max(0.04, Math.sqrt(sz * inv) * K_SIGMA)
+          Math.max(0.04, Math.min(Math.sqrt(sx * inv) * K_SIGMA, mx)),
+          Math.max(0.04, Math.min(Math.sqrt(sy * inv) * K_SIGMA, my)),
+          Math.max(0.04, Math.min(Math.sqrt(sz * inv) * K_SIGMA, mz))
         );
       }
+    }
+
+    /* ============================================================
+     * СЕТКА КОЖИ — НАСТОЯЩИЙ MESH-КОЛЛАЙДЕР
+     * ------------------------------------------------------------
+     * Эллипсоиды зон удобны для «кто меня трогает» (зона, трение,
+     * опора), но их поверхность не совпадает с кожей: сумма 60 выпуклых
+     * тел всегда чуть больше реальной оболочки. Отсюда и оставался
+     * зазор до 0.77 м — та самая невидимая стенка.
+     *
+     * Поэтому финальное слово за МЕШЕМ. Складываем вершины оболочки в
+     * равномерную сетку (локальные координаты) и спрашиваем у неё
+     * знаковое расстояние до кожи. Сетка перестраивается раз в 6 кадров
+     * вместе с _refitFromMesh — тело меняется плавно.
+     * ============================================================ */
+    _rebuildSkinGrid() {
+      const f = this.furry;
+      if (!f.mesh) return;
+      const pos = f.mesh.geometry.attributes.position.array;
+      const nrm = f.mesh.geometry.attributes.normal.array;
+      const idx = f.mesh.geometry.index.array;
+
+      /* В сетку кладём ТРЕУГОЛЬНИКИ, а не вершины.
+       *
+       * По вершинам точность упирается в плотность меша: у гиганта среднее
+       * ребро ≈ 0.6 м, значит ошибка «до ближайшей вершины» доходила до
+       * 30 см — столько же и оставалось от невидимой стенки. Расстояние до
+       * ПОВЕРХНОСТИ треугольника такой ошибки не имеет. */
+      /* Ячейка крупнее среднего ребра: мелкая сетка заставляет один
+       * треугольник попадать в десятки ячеек, и перестроение дорожает
+       * быстрее, чем ускоряется поиск. */
+      const cs = this._skinCell || (this._skinCell = 0.45);
+      let grid = this._skinGrid;
+      if (!grid) grid = this._skinGrid = new Map();
+      for (const list of grid.values()) list.length = 0;
+
+      /* Треугольник кладём в ОДНУ ячейку — по его центру.
+       *
+       * Раскладка по всему AABB давала 58 704 записи вместо 23 792 и
+       * стоила 6.7 мс на перестроение. Потерю точности компенсирует
+       * поиск: он всё равно смотрит соседние кольца ячеек, а половина
+       * ребра (≈0.07 лок.) заведомо меньше кольца в 0.45. */
+      const third = 1 / 3;
+      for (let t = 0; t < idx.length; t += 3) {
+        const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+        const mx = (pos[a] + pos[b] + pos[c]) * third;
+        const my = (pos[a + 1] + pos[b + 1] + pos[c + 1]) * third;
+        const mz = (pos[a + 2] + pos[b + 2] + pos[c + 2]) * third;
+        const key = Math.floor(mx / cs) + ',' + Math.floor(my / cs) + ',' + Math.floor(mz / cs);
+        let list = grid.get(key);
+        if (!list) { list = []; grid.set(key, list); }
+        list.push(t);
+      }
+      this._skinPos = pos;
+      this._skinNrm = nrm;
+      this._skinIdx = idx;
+      this._skinReady = true;
+    }
+
+    /** Ближайшая точка треугольника к точке p (классический алгоритм Эрикссона) */
+    _closestOnTri(px, py, pz, ax, ay, az, bx, by, bz, cx, cy, cz, out) {
+      const abx = bx - ax, aby = by - ay, abz = bz - az;
+      const acx = cx - ax, acy = cy - ay, acz = cz - az;
+      const apx = px - ax, apy = py - ay, apz = pz - az;
+      const d1 = abx * apx + aby * apy + abz * apz;
+      const d2 = acx * apx + acy * apy + acz * apz;
+      if (d1 <= 0 && d2 <= 0) { out[0] = ax; out[1] = ay; out[2] = az; return; }
+
+      const bpx = px - bx, bpy = py - by, bpz = pz - bz;
+      const d3 = abx * bpx + aby * bpy + abz * bpz;
+      const d4 = acx * bpx + acy * bpy + acz * bpz;
+      if (d3 >= 0 && d4 <= d3) { out[0] = bx; out[1] = by; out[2] = bz; return; }
+
+      const cpx = px - cx, cpy = py - cy, cpz = pz - cz;
+      const d5 = abx * cpx + aby * cpy + abz * cpz;
+      const d6 = acx * cpx + acy * cpy + acz * cpz;
+      if (d6 >= 0 && d5 <= d6) { out[0] = cx; out[1] = cy; out[2] = cz; return; }
+
+      const vc = d1 * d4 - d3 * d2;
+      if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+        const v = d1 / (d1 - d3);
+        out[0] = ax + abx * v; out[1] = ay + aby * v; out[2] = az + abz * v; return;
+      }
+      const vb = d5 * d2 - d1 * d6;
+      if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+        const w = d2 / (d2 - d6);
+        out[0] = ax + acx * w; out[1] = ay + acy * w; out[2] = az + acz * w; return;
+      }
+      const va = d3 * d6 - d5 * d4;
+      if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+        const w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        out[0] = bx + (cx - bx) * w; out[1] = by + (cy - by) * w; out[2] = bz + (cz - bz) * w; return;
+      }
+      const denom = 1 / (va + vb + vc);
+      const v = vb * denom, w = vc * denom;
+      out[0] = ax + abx * v + acx * w;
+      out[1] = ay + aby * v + acy * w;
+      out[2] = az + abz * v + acz * w;
+    }
+
+    /**
+     * Знаковое расстояние от точки до кожи, в ЛОКАЛЬНЫХ единицах.
+     *
+     * Ищем ближайшую вершину оболочки и проецируем на её нормаль:
+     * положительно — точка снаружи тела, отрицательно — уже внутри плоти.
+     *
+     * @returns {object|null} {dist, nx, ny, nz} или null, если кожи рядом нет
+     */
+    skinProbe(lx, ly, lz, maxLocal) {
+      // Ленивое перестроение: платим за сетку только когда её спросили
+      if (!this._skinReady || this._skinDirty) {
+        this._rebuildSkinGrid();
+        this._skinDirty = false;
+      }
+      const grid = this._skinGrid;
+      if (!grid || !grid.size) return null;
+      const pos = this._skinPos, nrm = this._skinNrm, idx = this._skinIdx;
+      const cs = this._skinCell;
+      const cx = Math.floor(lx / cs), cy = Math.floor(ly / cs), cz = Math.floor(lz / cs);
+
+      const cp = this._cpBuf || (this._cpBuf = [0, 0, 0]);
+      let bestD2 = Infinity, bestT = -1, bqx = 0, bqy = 0, bqz = 0;
+
+      /* Поиск кольцами, а не одним большим кубом.
+       *
+       * Раньше сразу перебирался куб радиусом maxLocal (7³ = 343 ячейки,
+       * ~21 000 треугольников) — 740 мкс на вызов, +1.4 мс к кадру.
+       * Кожа почти всегда в соседней ячейке, поэтому расширяемся кольцо
+       * за кольцом и останавливаемся, как только найденное расстояние
+       * гарантированно не улучшится: дальние ячейки просто не могут
+       * содержать ничего ближе, чем (R-1)*cs. */
+      const Rmax = Math.max(1, Math.ceil((maxLocal || cs * 2) / cs));
+      for (let R = 0; R <= Rmax; R++) {
+        // Найденное уже ближе, чем всё, что может лежать в этом кольце
+        if (bestT >= 0 && Math.sqrt(bestD2) < (R - 1) * cs) break;
+        for (let x = cx - R; x <= cx + R; x++)
+          for (let y = cy - R; y <= cy + R; y++)
+            for (let z = cz - R; z <= cz + R; z++) {
+              // Только внешняя оболочка кольца — внутренность уже проверена
+              if (R > 0 && Math.abs(x - cx) !== R && Math.abs(y - cy) !== R
+                        && Math.abs(z - cz) !== R) continue;
+              const list = grid.get(x + ',' + y + ',' + z);
+              if (!list) continue;
+              for (let k = 0; k < list.length; k++) {
+                const t = list[k];
+                const a = idx[t] * 3, b = idx[t + 1] * 3, c = idx[t + 2] * 3;
+                this._closestOnTri(lx, ly, lz,
+                  pos[a], pos[a + 1], pos[a + 2],
+                  pos[b], pos[b + 1], pos[b + 2],
+                  pos[c], pos[c + 1], pos[c + 2], cp);
+                const dx = lx - cp[0], dy = ly - cp[1], dz = lz - cp[2];
+                const d2 = dx * dx + dy * dy + dz * dz;
+                if (d2 < bestD2) { bestD2 = d2; bestT = t; bqx = cp[0]; bqy = cp[1]; bqz = cp[2]; }
+              }
+            }
+      }
+      if (bestT < 0) return null;
+
+      // Нормаль грани — среднее по трём вершинам
+      const a = idx[bestT] * 3, b = idx[bestT + 1] * 3, c = idx[bestT + 2] * 3;
+      let nx = nrm[a] + nrm[b] + nrm[c];
+      let ny = nrm[a + 1] + nrm[b + 1] + nrm[c + 1];
+      let nz = nrm[a + 2] + nrm[b + 2] + nrm[c + 2];
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      nx /= nl; ny /= nl; nz /= nl;
+
+      /* Расстояние до ПОВЕРХНОСТИ (не до вершины) — это и есть честный
+       * просвет до кожи. Знак берём по нормали грани: положительно —
+       * снаружи тела, отрицательно — уже в плоти. */
+      const dx = lx - bqx, dy = ly - bqy, dz = lz - bqz;
+      const euclid = Math.sqrt(bestD2);
+      const signed = dx * nx + dy * ny + dz * nz;
+      const _out = this._skinOut || (this._skinOut = {});
+      _out.dist = signed < 0 ? -euclid : euclid;
+      _out.signed = signed;
+      _out.euclid = euclid;
+      _out.nx = nx; _out.ny = ny; _out.nz = nz;
+      _out.px = bqx; _out.py = bqy; _out.pz = bqz;
+      return _out;
     }
 
     constructor(furry) {
@@ -326,7 +546,14 @@
       /* Подгонка коллайдеров под меш. Раз в несколько кадров: форма тела
        * меняется плавно, а полный проход по вершинам стоит дороже. */
       this._fitTick = (this._fitTick || 0) + 1;
-      if (this._fitTick % 6 === 0 || !this._ownershipReady) this._refitFromMesh();
+      if (this._fitTick % 6 === 0 || !this._ownershipReady) {
+        this._refitFromMesh();
+        /* Сетку кожи не строим наперёд: она нужна только когда кто-то
+         * реально трогает друга. Помечаем устаревшей — перестроится
+         * при первом же обращении (см. skinProbe). Так игрок, гуляющий
+         * вдали, не платит 2.5 мс за перестроение. */
+        this._skinDirty = true;
+      }
 
       this.stats.broadChecks = 0;
       this.stats.narrowChecks = 0;
@@ -414,10 +641,13 @@
       const dx0 = worldPos.x - bodyCenter.x, dz0 = worldPos.z - bodyCenter.z;
       if (dx0 * dx0 + dz0 * dz0 > maxReach * maxReach) return result;
 
-      // Переводим в локальное пространство тела (без учёта bodyScale — делим)
+      // Переводим в локальное пространство тела (1 локальная единица = bs метров)
       const local = _tmpV1.copy(worldPos);
+      /* worldToLocal уже делит на root.scale (= bodyScale), поэтому
+       * повторное деление НЕ нужно: раньше оно уводило игрока в bs раз
+       * ближе к началу координат, чем он есть, и вся коллизия считалась
+       * не там, где стоит игрок. */
       f.root.worldToLocal(local);
-      local.divideScalar(bs);
       const localRadius = radius / bs;
 
       // Проверяем капсулу тремя точками: ступни, центр, голова
@@ -482,9 +712,17 @@
           const zoneSink = C_SINK_BASE + soft * C_SINK_SOFT;
           // Пока лезем/ползём по телу, плоть расступается охотнее
           const burrowBonus = f.playerBurrowing ? C_SINK_BURROW : 0;
-          // Предел не может превышать габарит самой зоны, иначе «мягкость»
-          // формально разрешила бы пройти её насквозь.
-          const maxSink = Math.min((zoneSink + burrowBonus) * bs, minRad * bs * 0.92);
+          /* Предел погружения — в МЕТРАХ и НЕ масштабируется телом.
+           *
+           * Раньше здесь стояло (zoneSink + burrow) * bs. У гиганта bs≈4.6,
+           * и предел вырастал до 4.2 м: игрок проходил сквозь всю тушу,
+           * ни разу не встретив сопротивления («прошёл насквозь» в замерах).
+           * Насколько глубоко продавливается жир — свойство плоти, а не
+           * размера друга: 50 см остаются 50 сантиметрами.
+           *
+           * Второй предел — габарит самой зоны: мягкость не должна
+           * разрешать пройти зону насквозь. */
+          const maxSink = Math.min(zoneSink + burrowBonus, minRad * bs * 0.92);
 
           // Режим призрака: плоть не сопротивляется вовсе, игрок выходит сам
           const excessMeters = f.playerPhantom
@@ -524,6 +762,37 @@
           const pressDir = _tmpV4.copy(n).multiplyScalar(-1);
           c.node.press(pressDir, penetration * 0.35 * dt * 12);
           c.node.impulse(pressDir, penetration * 26 * dt * 60 * 0.016);
+        }
+      }
+
+      /* ---- ПОСЛЕДНЕЕ СЛОВО ЗА КОЖЕЙ ----
+       *
+       * Эллипсоиды зон в сумме всегда чуть больше оболочки, поэтому
+       * выталкивание могло сработать, когда игрок ещё в воздухе — это и
+       * ощущалось как невидимая стенка. Спрашиваем у меша, где реально
+       * кожа под капсулой игрока, и если до неё ещё есть просвет —
+       * ОТМЕНЯЕМ выталкивание: пусть подходит вплотную, носом в шерсть. */
+      if (result.hit && push.lengthSq() > 1e-8) {
+        /* Меряем просвет по ВСЕЙ капсуле (ноги/пояс/голова), а не только
+         * по поясу: иначе нависающий над головой живот остаётся незамечен,
+         * либо наоборот — фартук у ног отменяет законный контакт грудью. */
+        let minClear = Infinity, gotProbe = false;
+        for (const s of samples) {
+          const pr = this.skinProbe(local.x, s.y, local.z, localRadius * 3 + 0.5);
+          if (!pr) continue;
+          gotProbe = true;
+          if (pr.dist < minClear) minClear = pr.dist;
+        }
+        if (gotProbe) {
+          // Просвет от поверхности капсулы до кожи, в метрах
+          const clearance = (minClear - localRadius) * bs;
+          /* SKIN_TOUCH — «толщина шерсти»: 1 см, как и просил ТЗ
+           * (skinWidth = 0.01). Пока просвет больше — тела не касаются,
+           * и никакого отталкивания быть не должно. */
+          if (clearance > SKIN_TOUCH) {
+            push.set(0, 0, 0);
+            result.pushed = false;
+          }
         }
       }
 
@@ -826,8 +1095,7 @@
       const bs = f.bodyScale;
       // В локальное пространство
       const o = _tmpV1.copy(originWorld);
-      f.root.worldToLocal(o);
-      o.divideScalar(bs);
+      f.root.worldToLocal(o);   // деление на bs уже внутри
       const d = _tmpV2.copy(dirWorld);
       const inv = f.root.quaternion.clone().invert();
       d.applyQuaternion(inv).normalize();
@@ -856,7 +1124,8 @@
 
       const pointLocal = _tmpV3.copy(o).addScaledVector(d, bestT);
       const normalLocal = best.normalLocal(pointLocal.x, pointLocal.y, pointLocal.z, _tmpV4.clone());
-      const point = pointLocal.clone().multiplyScalar(bs);
+      // localToWorld сам умножит на root.scale (= bs) — вручную не масштабируем
+      const point = pointLocal.clone();
       f.root.localToWorld(point);
       const normal = normalLocal.clone().applyQuaternion(f.root.quaternion);
       return { collider: best, node: best.node, point, normal, distance: bestT * bs };
@@ -867,8 +1136,7 @@
       const f = this.furry;
       const bs = f.bodyScale;
       const local = _tmpV1.copy(worldPoint);
-      f.root.worldToLocal(local);
-      local.divideScalar(bs);
+      f.root.worldToLocal(local);   // деление на bs уже внутри
 
       let best = null, bestScore = Infinity;
       for (const c of this.colliders) {
@@ -889,8 +1157,7 @@
       const f = this.furry;
       const bs = f.bodyScale;
       const local = _tmpV1.set(worldX, f.root.position.y, worldZ);
-      f.root.worldToLocal(local);
-      local.divideScalar(bs);
+      f.root.worldToLocal(local);   // деление на bs уже внутри
 
       let top = -Infinity, zone = null;
       for (const c of this.colliders) {
@@ -1002,7 +1269,8 @@
         // Застрял в складке — едет вместе с телом
         if (it.stuck) {
           const c = it.stuck.collider;
-          const p = _tmpV1.copy(c.center).addScaledVector(it.stuck.offset, 1).multiplyScalar(furry.bodyScale);
+          // localToWorld сам умножит на bs — вручную не масштабируем
+          const p = _tmpV1.copy(c.center).addScaledVector(it.stuck.offset, 1);
           furry.root.localToWorld(p);
           it.mesh.position.lerp(p, 1 - Math.exp(-14 * dt));
           // Колыхание вытряхивает предмет
@@ -1025,8 +1293,7 @@
         if (hitZone) {
           const c = this.body.byId[hitZone.zone.id];
           const local = _tmpV2.copy(it.mesh.position);
-          furry.root.worldToLocal(local);
-          local.divideScalar(furry.bodyScale);
+          furry.root.worldToLocal(local);   // деление на bs уже внутри
           const depth = c.testLocal(local.x, local.y, local.z);
           if (depth > 0) {
             const n = c.normalLocal(local.x, local.y, local.z, _tmpV3.clone());

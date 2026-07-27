@@ -238,10 +238,19 @@ console.log('=== 9. ПОДОЙТИ ВПЛОТНУЮ (без невидимых �
     for (let i = 0; i < 30; i++) f.update(dt, 12);
     const cam = new THREE.PerspectiveCamera(75, 1.6, 0.1, 1000);
     const p = new FF.PlayerController(cam, world2, f, audio);
-    p.pos.set(HX, world2.heightAt(HX, HZ + 8), HZ + 8);
+    /* Стартуем ЗА пределами силуэта друга.
+     * На стадии 10 фартук дракона растекается на 11.7 м от центра, и
+     * спавн на +8 м оказывался ПОД нависшей плотью: игрок первые кадры
+     * законно был «внутри», и тест винил в этом физику. Отходим за
+     * габарит меша + запас. */
+    f.mesh.updateMatrixWorld(true);
+    f.mesh.geometry.computeBoundingBox();
+    const reach = f.mesh.geometry.boundingBox.max.z * f.bodyScale;
+    const startZ = HZ + Math.max(8, reach + 2.5);
+    p.pos.set(HX, world2.heightAt(HX, startZ), startZ);
     p.yaw = 0; p.keys.KeyW = true;
     let contact = 0, inside = 0;
-    for (let i = 0; i < 500; i++) {
+    for (let i = 0; i < 700; i++) {
       p.update(dt); f.update(dt, 12);
       if (p.contact) contact++;
       if (p._isInsideBody()) inside++;
