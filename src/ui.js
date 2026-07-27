@@ -284,6 +284,18 @@
               <div class="sm">${it.price} 🪙${it.cal ? ' · ' + it.cal + ' кал' : ''}</div>
               <div class="sm ${limit <= 0 ? 'red' : ''}">${
                 limit <= 0 ? 'сегодня всё' : limit >= 999 ? '∞ запас: 999' : 'осталось: ' + limit}</div></div>`;
+            /* Отдельная кнопка «взять всё»: берёт столько, сколько
+             * позволяют кошелёк и остаток на прилавке. Кнопка вынесена
+             * из карточки, иначе клик по ней считался бы обычной покупкой
+             * (обработчик висит на любом [data-act] внутри). */
+            if (limit > 0) {
+              const canN = it.price > 0 ? Math.floor(g.inv.coins / it.price) : limit;
+              const n = Math.min(limit, canN);
+              html += `<div class="item ${n <= 0 ? 'dis' : ''}" data-act="buy_all" data-id="${id}"
+                data-loc="${data.loc || 'stall'}" data-ing="${isIng ? 1 : 0}">
+                <div class="ic">🛒</div><div class="nm">Взять всё</div>
+                <div class="sm">${n > 0 ? '×' + n + ' — ' + (it.price * n) + ' 🪙' : 'не хватает монет'}</div></div>`;
+            }
           }
           html += '</div><p class="hint">В этом мире еды МАЛО: у каждой лавки дневной лимит. Готовь сам, ищи ингредиенты, выполняй задания!</p>';
           if (!isIng) html += '<h3>Продать</h3><div class="grid">';

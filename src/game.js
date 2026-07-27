@@ -620,8 +620,8 @@
         'Виктория: «Конкурс кондитеров скоро. Готовьтесь».',
         'Неизвестный отправитель: «Загляни на старый маяк в полночь...»',
       ];
-      // В каждом письме — денежный перевод на 1500 монет
-      const bonus = 1500;
+      // В каждом письме — денежный перевод на 100 000 монет
+      const bonus = 100000;
       this.inv.addCoins(bonus);
       this.notify(`📮 ${U.pick(letters)} · Перевод: +${bonus} 🪙`, 'info');
       this.audio.ui('coin');
@@ -972,6 +972,29 @@
           this.inv.add(ds.id, 1);
           this.audio.ui('coin');
           this.quests.event('inventory', { id: ds.id });
+          this.ui.render('shop', data);
+          break;
+        }
+        /* Закупить ВЕСЬ оставшийся запас позиции одним нажатием.
+         * Считаем, сколько штук реально по карману и сколько осталось
+         * на прилавке, и берём меньшее — так одна кнопка заменяет
+         * два десятка кликов, но лимиты лавки по-прежнему работают. */
+        case 'buy_all': {
+          const isIng = ds.ing === '1';
+          const it = isIng ? FF.ING_BY_ID[ds.id] : FF.FOOD_BY_ID[ds.id];
+          const loc = ds.loc || 'stall';
+          const key = loc === 'secretvault' ? 'vault:' + ds.id : loc + ':' + ds.id;
+          const left = this.shopLimit(loc, ds.id);
+          if (left <= 0) { this.notify('📦 Сегодня закончилось.', 'warn'); return; }
+          const afford = it.price > 0 ? Math.floor(this.inv.coins / it.price) : left;
+          const n = Math.min(left, afford);
+          if (n <= 0) { this.notify('🪙 Не хватает монет.', 'warn'); this.audio.ui('err'); return; }
+          if (!this.inv.spend(it.price * n)) { this.notify('🪙 Не хватает монет.', 'warn'); return; }
+          this.shopStock[key] -= n;
+          this.inv.add(ds.id, n);
+          this.audio.ui('coin');
+          this.quests.event('inventory', { id: ds.id });
+          this.notify(`🛒 ${it.icon} ${it.name} ×${n} — ${it.price * n} 🪙`, 'info');
           this.ui.render('shop', data);
           break;
         }
