@@ -118,3 +118,52 @@ console.log('=== 5. ВСЕ ВИДЫ БЕЗ АРТЕФАКТОВ ===');
 
 console.log('\nИТОГО: ' + pass + ' пройдено, ' + fail + ' провалено');
 if (fail) process.exitCode = 1;
+
+console.log('=== 6. КАЧЕСТВО ОБОЛОЧКИ (гладкость, без щелей) ===');
+{
+  const f = measure(250000).furry;
+  // 1. Швы между слитыми примитивами не расходятся
+  const pos = f.mesh.geometry.attributes.position.array;
+  let maxGap = 0;
+  const w = f._weld;
+  for (let i = 0; i < w.length;) {
+    const n = w[i++], v0 = w[i] * 3;
+    for (let k = 1; k < n; k++) {
+      const v = w[i + k] * 3;
+      const d = Math.hypot(pos[v]-pos[v0], pos[v+1]-pos[v0+1], pos[v+2]-pos[v0+2]);
+      if (d > maxGap) maxGap = d;
+    }
+    i += n;
+  }
+  t('швы зашиты (нет щелей в теле)', maxGap < 0.001, 'макс расхождение=' + maxGap.toFixed(5));
+
+  // 2. Поверхность гладкая: средний угол между гранями
+  const roughness = (furry) => {
+    const g = furry.mesh.geometry, p = g.attributes.position.array, idx = g.index.array;
+    const emap = new Map(), tn = [];
+    for (let i = 0; i < idx.length; i += 3) {
+      const a = idx[i]*3, b = idx[i+1]*3, c = idx[i+2]*3;
+      const e1x=p[b]-p[a], e1y=p[b+1]-p[a+1], e1z=p[b+2]-p[a+2];
+      const e2x=p[c]-p[a], e2y=p[c+1]-p[a+1], e2z=p[c+2]-p[a+2];
+      let nx=e1y*e2z-e1z*e2y, ny=e1z*e2x-e1x*e2z, nz=e1x*e2y-e1y*e2x;
+      const l=Math.hypot(nx,ny,nz)||1; tn.push([nx/l,ny/l,nz/l]);
+      const t3=i/3, vs=[idx[i],idx[i+1],idx[i+2]];
+      for (let k=0;k<3;k++){ const q=vs[k], r=vs[(k+1)%3];
+        const key=Math.min(q,r)+'_'+Math.max(q,r);
+        let L=emap.get(key); if(!L){L=[];emap.set(key,L);} L.push(t3); }
+    }
+    let sum=0,cnt=0;
+    for (const L of emap.values()) { if (L.length!==2) continue;
+      const A=tn[L[0]], B=tn[L[1]];
+      let d=A[0]*B[0]+A[1]*B[1]+A[2]*B[2];
+      sum += Math.acos(Math.max(-1,Math.min(1,d))); cnt++; }
+    return sum/cnt*180/Math.PI;
+  };
+  const r = roughness(f);
+  t('оболочка гладкая, не кусковатая', r < 16, 'шероховатость=' + r.toFixed(1) + '°');
+  t('сглаживание включено в конфиге', FF.CONFIG.render.meshSmooth > 0,
+    'meshSmooth=' + FF.CONFIG.render.meshSmooth);
+}
+
+console.log('\nВСЕГО: ' + pass + ' пройдено, ' + fail + ' провалено');
+if (fail) process.exitCode = 1;

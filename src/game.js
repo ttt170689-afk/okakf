@@ -69,6 +69,8 @@
       this.proximity = new FF.ProximitySystem(this);
       this.quirks = new FF.QuirkSystem(this);
       this.massPhys = new FF.MassPhysics(this);
+      // Жизнь на теле друга: сидеть, лежать, спать, прятаться в складках
+      this.bodySpots = new FF.BodySpots(this);
       this.furry.quirks = this.quirks;
       this.homeUpgrades = {};
       this.ui = new FF.UI(this);
@@ -183,7 +185,11 @@
         case 'KeyL': ui.toggle('stats'); break;
         case 'F1': ui.toggle('help'); break;
         case 'F4': ui.toggle('money'); break;
-        case 'KeyE': this._interact(); break;
+        case 'KeyE':
+          // Стоим на друге — предлагаем обустроиться, иначе обычный интерактив
+          if (this.bodySpots && this.bodySpots.state === 'lying') this.bodySpots.sleepOnBody();
+          else if (!(this.bodySpots && this.bodySpots.openMenu())) this._interact();
+          break;
         case 'KeyF': this._feedSelected(); break;
         case 'KeyQ': this._cycleItem(); break;
         case 'KeyG': this._throwFood(); break;
@@ -201,7 +207,9 @@
           break;
         }
         case 'Space':
-          if (this.cab.state === 'boarding') { this.cab.tapHelp(); }
+          if (this.cab.state === 'boarding') { this.cab.tapHelp(); break; }
+          // Сидим/лежим на друге — встаём, а не прыгаем
+          if (this.bodySpots && this.bodySpots.getUp()) break;
           break;
         case 'KeyN':
           if (this.player.mode === 'onbelly') this.startMinigame(U.pick(['jumper', 'dontfall']));
@@ -341,6 +349,7 @@
         case 'lighthouse': this._lighthouse(); break;
         case 'night_guard': this._nightGuard(); break;
         case 'secret_shop': this._secretShop(); break;
+        case 'bodyspot': this.bodySpots && this.bodySpots.perform(ds.id); break;
         case 'pet': this._petFriend(); break;
         case 'weigh': this._weighFriend(); break;
         case 'notebook': this.ui.open('notebook'); break;
@@ -1380,6 +1389,7 @@
       this.proximity && this.proximity.update(dt);
       this.quirks && this.quirks.update(dt);
       this.massPhys && this.massPhys.update(dt);
+      this.bodySpots && this.bodySpots.update(dt);
       this.world.update(dt, this.gameHours, this.player.pos);
       this.taxi.update(dt);
       this.boarding.update(dt);

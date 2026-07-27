@@ -467,6 +467,8 @@
       this._buildBody();
       this._buildFeatures();
       this._computeWeights();
+      this._buildWeldMap();
+      this._buildSmoothMap();
 
       // ГИПЕР-ФИЗИКА: 60 независимых коллайдеров зон
       this.physics = new FF.BodyPhysics(this);
@@ -492,15 +494,41 @@
       const T = B.torso, H = B.hips, Lm = B.limbs;
 
       // Торс (эллипсоид высокой детализации — основа деформации)
-      add(new THREE.SphereGeometry(1, 44, 34), M(0, 1.22, 0, 0.44 * T, 0.62, 0.36 * T), 0);
+      add(new THREE.SphereGeometry(1, 38, 28), M(0, 1.22, 0, 0.44 * T, 0.62, 0.36 * T), 0);
       // Таз/бёдра
       add(new THREE.SphereGeometry(1, 34, 26), M(0, 0.82, -0.06, 0.42 * H, 0.34, 0.36 * H), 1);
       // Грудь
       add(new THREE.SphereGeometry(1, 30, 24), M(0, 1.56, 0.04, 0.38 * T, 0.26, 0.30 * T), 2);
-      // Голова
-      add(new THREE.SphereGeometry(1, 32, 26), M(0, 2.02, 0.02, 0.24, 0.24, 0.25), 3);
+
+      /* --- МНОГОЯРУСНЫЕ СКЛАДКИ (референсы: «слоёный торт из подушек») ---
+       *
+       * Раньше тело было одним гладким эллипсоидом, поэтому на большой массе
+       * читалось как бесформенный пузырь. На артах же силуэт составлен из
+       * нескольких округлых ярусов, лежащих друг на друге.
+       *
+       * Каждый ярус — сплюснутая сфера чуть шире торса на своей высоте.
+       * Пока друг худой, ярусы утоплены внутрь корпуса и невидимы; с ростом
+       * живота зоны выталкивают их наружу, и проступает та самая «стопка».
+       * Ярусы принадлежат part 0, поэтому подчиняются зонам живота. */
+      const TIERS = [
+        { y: 0.62, r: 0.44, h: 0.15, z: 0.07 },   // нижний фартук — самый широкий
+        { y: 0.88, r: 0.47, h: 0.15, z: 0.09 },
+        { y: 1.13, r: 0.48, h: 0.15, z: 0.10 },   // средний живот, главная масса
+        { y: 1.36, r: 0.45, h: 0.14, z: 0.09 },
+        { y: 1.55, r: 0.39, h: 0.13, z: 0.07 },   // подрёберная
+        { y: 1.71, r: 0.32, h: 0.11, z: 0.05 },   // переход к груди
+      ];
+      for (const t of TIERS) {
+        // Сегментация умеренная: ярус — плавное широкое кольцо, мелкая
+        // детализация на нём не видна, а вершины стоят кадров.
+        add(new THREE.SphereGeometry(1, 26, 14),
+          M(0, t.y, t.z, t.r * T, t.h, (t.r * 0.86) * T), 0);
+      }
+      /* Голова заметно меньше корпуса и посажена ниже: на референсах она
+       * тонет в шейных складках, а не возвышается над телом. */
+      add(new THREE.SphereGeometry(1, 32, 26), M(0, 1.98, 0.02, 0.205, 0.205, 0.215), 3);
       // Морда
-      add(new THREE.SphereGeometry(1, 20, 16), M(0, 1.97, 0.22, 0.13, 0.10, 0.13), 3);
+      add(new THREE.SphereGeometry(1, 20, 16), M(0, 1.94, 0.20, 0.115, 0.088, 0.115), 3);
       // Шея
       add(new THREE.CylinderGeometry(0.17, 0.22, 0.22, 20, 3), M(0, 1.80, 0.02, 1, 1, 1), 4);
 
@@ -1527,6 +1555,12 @@
         sweatArr[i] = sw;
         cellArr[i] = cl;
       }
+      /* Сглаживание оболочки: убирает кусковатость на границах зон.
+       * Порядок важен — сначала сглаживаем, потом сшиваем швы, иначе
+       * сглаживание снова разведёт вершины стыков. */
+      const sm = FF.CONFIG.render.meshSmooth;
+      if (sm > 0) { this._smoothMesh(sm); if (sm > 0.3) this._smoothMesh(sm * 0.6); }
+      this._weldPositions();
       this.mesh.geometry.attributes.position.needsUpdate = true;
       this.stretchAttr.needsUpdate = true;
       this.heatAttr.needsUpdate = true;
@@ -1536,6 +1570,147 @@
       this._normalTick = (this._normalTick || 0) + 1;
       const every = this._normalLOD || 3;
       if (this._normalTick % every === 0) this._fastNormals();
+    }
+
+    /**
+     * Карта соседей для сглаживания оболочки.
+     *
+     * Деформация 60 независимых зон даёт кусковатый силуэт: соседние участки
+     * тянутся в разные стороны, и на границах зон видны рёбра. Референсы
+     * же показывают гладкие округлые массы. Лапласово сглаживание (усреднение
+     * с соседями по рёбрам) убирает рябь, сохраняя общую форму.
+     */
+    _buildSmoothMap() {
+      const idx = this.mesh.geometry.index.array;
+      const n = this.vertexCount;
+      const cnt = new Int32Array(n);
+      // Сколько соседей у каждой вершины
+      for (let i = 0; i < idx.length; i += 3) {
+        cnt[idx[i]] += 2; cnt[idx[i + 1]] += 2; cnt[idx[i + 2]] += 2;
+      }
+      const start = new Int32Array(n + 1);
+      for (let v = 0; v < n; v++) start[v + 1] = start[v] + cnt[v];
+      const nb = new Int32Array(start[n]);
+      const fill = start.slice(0, n);
+      const add = (a, b) => { nb[fill[a]++] = b; };
+      for (let i = 0; i < idx.length; i += 3) {
+        const a = idx[i], b = idx[i + 1], c = idx[i + 2];
+        add(a, b); add(a, c); add(b, a); add(b, c); add(c, a); add(c, b);
+      }
+      this._smStart = start;
+      this._smNb = nb;
+      this._smBuf = new Float32Array(n * 3);
+    }
+
+    /**
+     * Сгладить оболочку: каждая вершина немного подтягивается к среднему
+     * положению соседей. Сила берётся из CONFIG.render.meshSmooth.
+     */
+    _smoothMesh(strength) {
+      if (!this._smNb || strength <= 0) return;
+      const pos = this.mesh.geometry.attributes.position.array;
+      const buf = this._smBuf;
+      const start = this._smStart, nb = this._smNb;
+      const n = this.vertexCount;
+      for (let v = 0; v < n; v++) {
+        const s = start[v], e = start[v + 1];
+        const deg = e - s;
+        if (deg === 0) { buf[v*3] = pos[v*3]; buf[v*3+1] = pos[v*3+1]; buf[v*3+2] = pos[v*3+2]; continue; }
+        let x = 0, y = 0, z = 0;
+        for (let i = s; i < e; i++) {
+          const u = nb[i] * 3;
+          x += pos[u]; y += pos[u + 1]; z += pos[u + 2];
+        }
+        const inv = 1 / deg;
+        buf[v*3]     = pos[v*3]     + (x * inv - pos[v*3])     * strength;
+        buf[v*3 + 1] = pos[v*3 + 1] + (y * inv - pos[v*3 + 1]) * strength;
+        buf[v*3 + 2] = pos[v*3 + 2] + (z * inv - pos[v*3 + 2]) * strength;
+      }
+      pos.set(buf);
+    }
+
+    /**
+     * Карта «сваренных» вершин.
+     *
+     * Тело собрано из отдельных примитивов (торс, таз, грудь, лапы...), и в
+     * местах стыка лежат разные вершины с ОДИНАКОВЫМИ координатами. Каждая
+     * получает нормаль только от своих треугольников, поэтому на швах свет
+     * ломается — тело выглядит собранным из угловатых кусков, а не цельным.
+     *
+     * Здесь находим совпадающие вершины и запоминаем группы, чтобы потом
+     * усреднить их нормали и смещения. Считается один раз при создании.
+     */
+    _buildWeldMap() {
+      const base = this.basePos;
+      const buckets = new Map();
+      for (let v = 0; v < this.vertexCount; v++) {
+        // Округление до 0.1 мм: реальные швы совпадают точно
+        const k = Math.round(base[v * 3] * 10000) + '_'
+                + Math.round(base[v * 3 + 1] * 10000) + '_'
+                + Math.round(base[v * 3 + 2] * 10000);
+        let list = buckets.get(k);
+        if (!list) { list = []; buckets.set(k, list); }
+        list.push(v);
+      }
+      // В плоский массив: [кол-во, v1, v2, ...] — так обход дешевле
+      const groups = [];
+      for (const list of buckets.values()) {
+        if (list.length < 2) continue;
+        groups.push(list.length);
+        for (const v of list) groups.push(v);
+      }
+      this._weld = Int32Array.from(groups);
+    }
+
+    /**
+     * Сшить позиции вершин в швах.
+     *
+     * Совпадающие вершины принадлежат разным примитивам, а значит получают
+     * РАЗНЫЕ веса зон в скиннинге. При сильной деформации они расходятся
+     * (на гиганте — до 12 см), и в теле появляются щели, сквозь которые
+     * видно нутро. Усредняем позиции, чтобы оболочка оставалась цельной.
+     */
+    _weldPositions() {
+      if (!this._weld) return;
+      const pos = this.mesh.geometry.attributes.position.array;
+      const w = this._weld;
+      for (let i = 0; i < w.length;) {
+        const n = w[i++];
+        let x = 0, y = 0, z = 0;
+        for (let k = 0; k < n; k++) {
+          const v = w[i + k] * 3;
+          x += pos[v]; y += pos[v + 1]; z += pos[v + 2];
+        }
+        const inv = 1 / n;
+        x *= inv; y *= inv; z *= inv;
+        for (let k = 0; k < n; k++) {
+          const v = w[i + k] * 3;
+          pos[v] = x; pos[v + 1] = y; pos[v + 2] = z;
+        }
+        i += n;
+      }
+    }
+
+    /** Усреднить нормали в швах, чтобы стыки не бликовали гранями */
+    _weldNormals() {
+      if (!this._weld) return;
+      const nrm = this.mesh.geometry.attributes.normal.array;
+      const w = this._weld;
+      for (let i = 0; i < w.length;) {
+        const n = w[i++];
+        let x = 0, y = 0, z = 0;
+        for (let k = 0; k < n; k++) {
+          const v = w[i + k] * 3;
+          x += nrm[v]; y += nrm[v + 1]; z += nrm[v + 2];
+        }
+        const len = Math.sqrt(x * x + y * y + z * z) || 1;
+        x /= len; y /= len; z /= len;
+        for (let k = 0; k < n; k++) {
+          const v = w[i + k] * 3;
+          nrm[v] = x; nrm[v + 1] = y; nrm[v + 2] = z;
+        }
+        i += n;
+      }
     }
 
     /**
@@ -1566,6 +1741,9 @@
         const len = Math.sqrt(x * x + y * y + z * z) || 1;
         nrm[i] = x / len; nrm[i + 1] = y / len; nrm[i + 2] = z / len;
       }
+      // Швы между слитыми примитивами: усредняем нормали, иначе на стыках
+      // видны жёсткие грани и тело кажется «осколочным»
+      this._weldNormals();
       geo.attributes.normal.needsUpdate = true;
     }
 

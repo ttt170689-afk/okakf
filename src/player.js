@@ -501,6 +501,71 @@
       this.bodyGroundZone = res.groundZone;
     }
 
+    /**
+     * Строгая проверка режима «под животом».
+     *
+     * Раньше хватало «игрок в радиусе и низко» — и, подойдя к ноге гиганта,
+     * он получал режим без всякого живота над головой. Теперь требуются
+     * ВСЕ условия сразу, как в ТЗ:
+     *
+     *   1. игрок не внутри меша (иначе это баг проваливания);
+     *   2. он в проекции живота на землю;
+     *   3. он ниже нижней кромки нависающей плоти;
+     *   4. он у земли, а не парит;
+     *   5. луч вверх реально упирается в зону живота.
+     */
+    _hasBellyOverhead() {
+      const f = this.furry;
+      if (!f.physics || !f.physics.colliders) return false;
+
+      /* Проверка идёт по вершинам меша и стоит дорого, а результат меняется
+       * медленно (игрок не телепортируется каждый кадр). Считаем раз в
+       * 6 кадров и переиспользуем — на глаз разницы нет, а бюджет кадра
+       * возвращается к прежнему. */
+      this._overTick = (this._overTick || 0) + 1;
+      if (this._overCache !== undefined && this._overTick % 6 !== 0) return this._overCache;
+
+      const decide = (v) => { this._overCache = v; return v; };
+
+      // (1) Внутри меша — это не «под животом», это застревание
+      if (this._isInsideBody()) return decide(false);
+
+      // (4) У земли: под тушей нельзя парить в воздухе
+      const gy = this.world.heightAt(this.pos.x, this.pos.z);
+      if (this.pos.y - gy > 2.2) return decide(false);
+
+      const bs = f.bodyScale;
+      const local = _tmpPull.copy(this.pos);
+      f.root.worldToLocal(local);
+      local.divideScalar(bs);
+      const headY = local.y + this.height / bs;
+
+      /* (5) Луч вверх: ищем вершины МЕША прямо над головой.
+       *
+       * По коллайдерам это делать нельзя — эллипсоид фартука у гиганта
+       * растекается на десятки метров, и «под животом» срабатывало даже
+       * в 40 м от друга. Меш же отражает настоящую форму. Проверяем
+       * узкий столб над макушкой: если там есть плоть — мы действительно
+       * под нависающей массой. */
+      const arr = f.mesh.geometry.attributes.position.array;
+      const world = _tmpDown;
+      const headWorld = this.pos.y + this.height;
+      const R2 = 0.55 * 0.55;      // радиус столба над головой
+      let hits = 0;
+      // Шаг по вершинам: полный проход на 16k вершин каждый кадр дорог,
+      // а для проверки «есть ли масса сверху» достаточно выборки.
+      for (let v = 0; v < f.vertexCount; v += 3) {
+        const i = v * 3;
+        world.set(arr[i], arr[i + 1], arr[i + 2]);
+        f.mesh.localToWorld(world);
+        if (world.y <= headWorld) continue;
+        const dx = world.x - this.pos.x, dz = world.z - this.pos.z;
+        if (dx * dx + dz * dz > R2) continue;
+        if (++hits >= 3) return decide(true);   // три попадания — уверенно «под»
+      }
+      return decide(false);
+    }
+
     /* -------------------- Анти-застревание -------------------- */
     /**
      * Страховка от того, что игрок увязнет внутри туши.
@@ -634,10 +699,35 @@
       const prev = this.mode;
 
       if (!this.climbing) {
-        const bellyTop = (1.35 + bellyG * 0.55) * S;
-        if (local.y > bellyTop - 0.6 && horiz < (0.5 + bellyG * 1.5) * S && this.onGround) {
+        /* Режимы определяем по РЕАЛЬНОЙ геометрии, а не по грубому цилиндру
+         * вокруг друга. Старая проверка «игрок ниже 0.95 и ближе радиуса»
+         * у гиганта охватывала площадь в несколько метров, поэтому просто
+         * подойдя к ноге игрок получал режим «под животом», а камера при
+         * этом оказывалась в пустоте — отсюда и ощущение провала внутрь. */
+        // Стоим ногами на ЛЮБОЙ крупной зоне тела — значит мы наверху.
+        // Эта проверка идёт первой: если под ногами плоть, мы точно не «под».
+        /* Опора под ногами — любая зона тела: стоя на голове, спине или
+         * плече игрок всё равно сверху, а не «под животом».
+         *
+         * standingZone держится до следующего касания, поэтому отойдя от
+         * друга игрок сохранял режим onbelly. Сверяем, что опора реально
+         * под ногами: её верх должен быть рядом с текущей высотой. */
+        let onBody = false;
+        if (this.standingZone && this.standingZone.node && this.onGround) {
+          const c = this.standingZone;
+          const topWorld = f.root.position.y + (c.center.y + c.radii.y) * f.bodyScale;
+          // Опора должна быть свежей: её верх рядом с ногами игрока
+          const fresh = Math.abs(this.pos.y - topWorld) < 1.2 + f.bodyScale * 0.4;
+          // И заметно выше земли: фартук, растёкшийся по грунту, — это
+          // ещё не «стоять на друге», иначе режим включался в 30 м от него.
+          const gy = this.world.heightAt(this.pos.x, this.pos.z);
+          const lifted = this.pos.y - gy > 0.45;
+          onBody = fresh && lifted;
+          if (!fresh) this.standingZone = null;   // опора устарела
+        }
+        if (onBody) {
           this.mode = 'onbelly';
-        } else if (bellyG > 0.45 && local.y < 0.95 * S && horiz < (0.7 + bellyG * 1.6) * S) {
+        } else if (this._hasBellyOverhead()) {
           this.mode = 'underbelly';
         } else this.mode = 'walk';
       }
