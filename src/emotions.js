@@ -26,6 +26,12 @@
    * 1. ЭМОЦИИ
    * ============================================================ */
 
+  /** Если таблица стадий недоступна — ведём себя как «толстяк» */
+  const PERSONA_FALLBACK = {
+    id: 'fat', from: 0, to: 100, name: 'Толстый', icon: '🍔',
+    base: 'content', mood: 'cozy', bias: {}, tempo: 1.0, absorb: null,
+  };
+
   /** Стартовые значения. Всё в шкале 0..100. */
   const BASE_EMOTIONS = {
     happiness: 50, love: 30, hunger: 40, comfort: 50,
@@ -112,11 +118,44 @@
       this._clamp();
     }
 
+    /**
+     * Текущая стадия личности по числовой стадии массы.
+     *
+     * Стадий массы 101, а характеров восемь: малыш-непоседа, пухлячок,
+     * толстяк, очень толстый, огромный, гигантский, колоссальный и
+     * легендарный. Таблица живёт в CONFIG.growth.personaStages.
+     *
+     * @returns {object} запись стадии (никогда не null)
+     */
+    persona() {
+      const list = FF.CONFIG.growth.personaStages;
+      if (!list || !list.length) return PERSONA_FALLBACK;
+      const st = this.furry.stage | 0;
+      for (const p of list) if (st >= p.from && st <= p.to) return p;
+      // За пределами таблицы — крайняя запись (легендарная)
+      return st < list[0].from ? list[0] : list[list.length - 1];
+    }
+
+    /**
+     * Базовые эмоции С УЧЁТОМ стадии.
+     *
+     * Характер не должен быть одинаковым у худышки и у колосса: стройный
+     * фонтанирует энергией, легендарный — сплошное блаженство. Поэтому к
+     * общим базовым значениям прибавляем сдвиг стадии, и вся механика
+     * затухания сама тянет эмоции к «настроению возраста».
+     */
+    _stageBase(key) {
+      const b = BASE_EMOTIONS[key];
+      const bias = this.persona().bias;
+      if (!bias || bias[key] === undefined) return b;
+      return U.clamp(b + bias[key], 0, 100);
+    }
+
     /** Доминирующая эмоция — та, что сильнее всего отклонилась от нормы */
     _updateDominant() {
       let best = 'comfort', bestScore = -1;
       for (const k in this.e) {
-        const base = BASE_EMOTIONS[k];
+        const base = this._stageBase(k);
         const score = (this.e[k] - base) / Math.max(20, 100 - base);
         if (score > bestScore) { bestScore = score; best = k; }
       }
@@ -128,12 +167,19 @@
       const f = this.furry;
 
       /* --- Естественное затухание к базовым значениям --- */
+      /* Тянем не к общей норме, а к норме СТАДИИ: у стройного покой —
+       * это возбуждение 50, у легендарного — блаженная дрёма. */
       const decay = (key, rate) => {
-        e[key] += (BASE_EMOTIONS[key] - e[key]) * Math.min(1, rate * dt);
+        e[key] += (this._stageBase(key) - e[key]) * Math.min(1, rate * dt);
       };
       decay('excitement', 0.35); decay('shyness', 0.07); decay('anxiety', 0.12);
       decay('playfulness', 0.10); decay('gratitude', 0.05); decay('pride', 0.05);
       decay('happiness', 0.04); decay('comfort', 0.05);
+      /* Привязанность и доверие тоже дрейфуют к норме СТАДИИ, только
+       * очень медленно: чувства взрослеют вместе с телом. Без этого
+       * сдвиг love/trust в таблице стадий не работал вовсе — оба поля
+       * висели на стартовых 30/40 у любой персоны. */
+      decay('love', 0.012); decay('trust', 0.010);
 
       // Голод и сонливость растут сами
       e.hunger += dt * 0.45;

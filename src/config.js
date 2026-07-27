@@ -32,6 +32,10 @@
       /* Сглаживание оболочки тела (лапласово, 0..0.6). Убирает кусковатость
        * на границах 60 зон: силуэт становится округлым, как на артах. */
       meshSmooth: 0.42,
+      /* Принудительная симметрия оболочки каждый кадр.
+       * Левая половина — точное зеркало правой. Выключать только для
+       * отладки: без неё тело перекашивает на поздних стадиях. */
+      forceSymmetry: true,
     },
 
     // --- Пост-обработка ---
@@ -131,6 +135,84 @@
         for (let i = 11; i <= 100; i++) { v = Math.round(v * 1.115); t.push(v); }
         return t;
       })(),
+      /* --- ВОСЕМЬ СТАДИЙ ЛИЧНОСТИ ---
+       *
+       * Числовых стадий у нас 101 (см. stageThresholds) — это шкала массы.
+       * Но ХАРАКТЕР меняется не сто раз, а восемь: от энергичного малыша
+       * до божественного колосса. Здесь описано, как стадия массы
+       * превращается в темперамент, эмоции и способность к «кокону».
+       *
+       * from/to — включительные границы по числовой стадии.
+       * bias    — сдвиг базовых эмоций (складывается с BASE_EMOTIONS).
+       * absorb  — засасывание: null = недоступно, иначе задержка и глубина.
+       */
+      personaStages: [
+        {
+          id: 'slim', from: 0, to: 1,
+          name: 'Стройный', icon: '💫',
+          base: 'energetic', mood: 'active',
+          bias: { excitement: 30, playfulness: 25, happiness: 10, sleepiness: -8, pride: -10 },
+          tempo: 1.35,          // множитель темпа движений и дыхания
+          absorb: null,
+        },
+        {
+          id: 'chubby', from: 2, to: 4,
+          name: 'Пухлячок', icon: '🥰',
+          base: 'playful', mood: 'flirty',
+          bias: { playfulness: 30, shyness: 15, pride: 10, excitement: 15 },
+          tempo: 1.18,
+          absorb: null,
+        },
+        {
+          id: 'fat', from: 5, to: 7,
+          name: 'Толстый', icon: '🍔',
+          base: 'content', mood: 'cozy',
+          bias: { comfort: 20, love: 15, happiness: 10, excitement: -5 },
+          tempo: 1.0,
+          absorb: null,
+        },
+        {
+          id: 'very_fat', from: 8, to: 9,
+          name: 'Очень толстый', icon: '🎈',
+          base: 'loving', mood: 'warm',
+          bias: { love: 30, comfort: 30, trust: 20, excitement: -12, sleepiness: 8 },
+          tempo: 0.86,
+          // Впервые доступен кокон: мягко и неглубоко
+          absorb: { delay: 30, depth: 0.62 },
+        },
+        {
+          id: 'obese', from: 10, to: 12,
+          name: 'Огромный', icon: '💥',
+          base: 'peaceful', mood: 'wise',
+          bias: { comfort: 35, love: 32, pride: 25, sleepiness: 18, excitement: -20 },
+          tempo: 0.72,
+          absorb: { delay: 20, depth: 0.8 },
+        },
+        {
+          id: 'huge', from: 13, to: 15,
+          name: 'Гигантский', icon: '🌋',
+          base: 'blissful', mood: 'serene',
+          bias: { comfort: 45, love: 40, sleepiness: 26, pride: 28, excitement: -28, anxiety: -12 },
+          tempo: 0.58,
+          absorb: { delay: 15, depth: 1.0 },
+        },
+        {
+          id: 'colossal', from: 16, to: 19,
+          name: 'Колоссальный', icon: '🏔️',
+          base: 'trance', mood: 'united',
+          bias: { comfort: 52, love: 46, sleepiness: 34, pride: 32, excitement: -34, anxiety: -18, shyness: -20 },
+          tempo: 0.44,
+          absorb: { delay: 10, depth: 1.0, special: true },
+        },
+        {
+          id: 'legendary', from: 20, to: 100,
+          name: 'Легендарный', icon: '🌟',
+          base: 'divine', mood: 'enlightened',
+          bias: { comfort: 60, love: 55, sleepiness: 40, pride: 40, excitement: -38, anxiety: -25, shyness: -30 },
+          tempo: 0.32,
+          absorb: { delay: 5, depth: 1.0, special: true, mystical: true },
+        },
+      ],
       stageNames: (() => {
         const n = [
           'Стройняшка', 'Мягонький', 'Пухляш', 'Полненький', 'Толстяк',

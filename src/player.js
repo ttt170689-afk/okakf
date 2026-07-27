@@ -334,8 +334,15 @@
       this.pos.copy(next);
 
       // Стамина восстанавливается
-      if (this.onGround && !this.keys.ShiftLeft)
-        this.stamina = Math.min(C.maxStamina, this.stamina + dt * C.staminaRegen);
+      if (this.onGround && !this.keys.ShiftLeft) {
+        /* «Тёплый сон» после кокона: +20% к восстановлению на 10 минут */
+        let regen = C.staminaRegen;
+        if (this.warmSleepTimer > 0) {
+          this.warmSleepTimer -= dt;
+          regen *= 1.2;
+        }
+        this.stamina = Math.min(C.maxStamina, this.stamina + dt * regen);
+      }
 
       /* --- ВЕС ИГРОКА ПРОДАВЛИВАЕТ ПЛОТЬ ---
        * Стоим на друге — под ногами постоянная вмятина, а не просто опора.

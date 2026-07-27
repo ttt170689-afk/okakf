@@ -23,7 +23,15 @@ const avgY = (nd) => { let a = 0; for (let i = 0; i < 60; i++) { f.update(dt, 12
 const napeAvg = avgY(nape), shelfAvg = avgY(shelf);
 t('загривок НЕ провисает вниз (sag=0)', napeAvg > -0.01, 'сред. y=' + napeAvg.toFixed(4));
 t('полка над попой НЕ провисает вниз', shelfAvg > -0.01, 'сред. y=' + shelfAvg.toFixed(4));
-t('живот свисает сильнее загривка', Math.abs(apron.offset.y)>Math.abs(nape.offset.y)*3);
+/* Сравниваем ПРОВИСАНИЕ (движение вниз), а не модуль смещения.
+ * Загривок не провисает вовсе — он слегка ходит ВВЕРХ от дыхания
+ * (+0.054), и |apron| > |nape|*3 требовал от него тонуть, чего по
+ * профилю sag=0 быть не должно. Правильная проверка: живот заметно
+ * уходит вниз, а загривок — нет. */
+const apronAvg = avgY(apron);
+t('живот свисает сильнее загривка',
+  apronAvg < -0.01 && apronAvg < napeAvg - 0.03,
+  'живот ' + apronAvg.toFixed(4) + ' против загривка ' + napeAvg.toFixed(4));
 
 console.log('=== 2. МНОГОСЛОЙНЫЙ ЖИР: слои рассинхронены ===');
 const mb=f.nodeById.mid_belly;

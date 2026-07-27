@@ -108,11 +108,28 @@
       for (const l of this.layers) ampSum += l.cfg.amp;
       this.ampNorm = ampSum > 0 ? 1 / ampSum : 1;
 
-      /* Фаза микро-дрожи. Детерминированная (от индекса зоны), а не
-       * случайная: соседние зоны всё равно дрожат вразнобой, зато поведение
-       * тела воспроизводимо от запуска к запуску — иначе физику невозможно
-       * ни отладить, ни покрыть тестами. */
-      this.microPhase = (index * 2.399963) % (Math.PI * 2);   // золотой угол
+      /* Фаза микро-дрожи.
+       *
+       * Раньше фаза бралась от ИНДЕКСА зоны (золотой угол). Детерминизм
+       * это дало, но сломало симметрию: left_flank и right_flank —
+       * разные индексы, значит разные фазы, значит бока дрожат вразнобой.
+       * Замер показал расхождение зеркальных вершин до 2.4 м — тело
+       * буквально перекашивало.
+       *
+       * Теперь фаза считается от ПАРНОГО имени зоны: left_flank и
+       * right_flank дают одну и ту же фазу, а зеркальность обеспечивает
+       * знак side (см. ниже). Соседние зоны по-прежнему дрожат вразнобой. */
+      const symId = String(zone.id).replace(/^(left|right|lower_left|lower_right|upper_left|upper_right|inner_left|inner_right|outer_left|outer_right)_/, '');
+      let h = 0;
+      for (let i = 0; i < symId.length; i++) h = (h * 31 + symId.charCodeAt(i)) | 0;
+      this.symIndex = Math.abs(h) % 997;
+      this.microPhase = (this.symIndex * 2.399963) % (Math.PI * 2);
+
+      /* Сторона тела: +1 справа, −1 слева, 0 по центру.
+       * Горизонтальная микро-дрожь зеркалится по этому знаку, иначе обе
+       * половины уезжают в одну сторону. У центральных зон боковой дрожи
+       * нет вовсе — иначе симметрия невозможна в принципе. */
+      this.side = zone.pos[0] > 0.001 ? 1 : (zone.pos[0] < -0.001 ? -1 : 0);
       this.settle = 0;        // «оседание» жира при долгом стоянии
       this.sweat = 0;         // испарина в складке
       this.contactPress = 0;  // давление от соседней зоны (self-collision)
@@ -203,10 +220,13 @@
 
       /* --- Микро-жизнь: тело не замирает даже в покое --- */
       if (ctx.micro && g > 0.02) {
-        this.microPhase += dt * (1.6 + this.index * 0.017);
+        // Скорость дрожи — тоже от симметричного индекса, иначе левый и
+        // правый бок разойдутся по фазе уже через пару секунд
+        this.microPhase += dt * (1.6 + this.symIndex * 0.017);
         const m = S.microJiggle * this.microK * fill;
         this.offset.y += Math.sin(this.microPhase) * m;
-        this.offset.x += Math.sin(this.microPhase * 0.7 + 1.3) * m * 0.5;
+        // Боковая составляющая зеркалится: правый бок вправо, левый влево
+        this.offset.x += Math.sin(this.microPhase * 0.7 + 1.3) * m * 0.5 * this.side;
         // Пульс сердца — общая для тела фаза, видна на больших массах
         this.offset.y += ctx.heartbeat * S.heartbeatAmp * fill * this.microK;
       }
@@ -925,7 +945,16 @@
           const w = Math.pow(Math.max(0, 1 - d / (r * 1.9)), 2.1);
           if (w > 0.001) tmp.push([j, w]);
         }
-        tmp.sort((a, b) => b[1] - a[1]);
+        /* Сортировка с УСТОЙЧИВЫМ тай-брейком.
+         *
+         * Зеркальные вершины дают одинаковый набор весов, но при равных
+         * весах порядок решался индексом зоны — и обрезание до top-4
+         * оставляло СЛЕВА одну зону, а СПРАВА другую (замер: 17.6%
+         * вершин привязаны по-разному). Отсюда и перекос тела.
+         * При равенстве сравниваем по имени — оно от стороны не зависит. */
+        tmp.sort((a, b) => (b[1] - a[1])
+          || (this.nodes[a[0]].symIndex - this.nodes[b[0]].symIndex)
+          || (a[0] - b[0]));
         let sum = 0;
         for (let k = 0; k < K && k < tmp.length; k++) sum += tmp[k][1];
         for (let k = 0; k < K && k < tmp.length; k++) {
@@ -934,6 +963,89 @@
         }
       }
       this.K = K;
+      // Гарантия: левая половина получает точное зеркало правой
+      this._symmetrizeWeights();
+    }
+
+    /**
+     * Сделать веса скиннинга строго зеркальными.
+     *
+     * Даже с устойчивой сортировкой остаются вершины, где числовой шум
+     * меняет состав top-4. Поэтому не полагаемся на удачу: считаем веса
+     * канонически для ПРАВОЙ половины и копируем их налево, подменяя
+     * зоны на парные. После этого асимметрия скиннинга невозможна
+     * в принципе — она не «уменьшена», а исключена.
+     */
+    _symmetrizeWeights() {
+      const K = this.K, base = this.basePos, n = this.vertexCount;
+
+      // Зона -> зеркальная зона (по индексу узла)
+      const mirrorNode = new Int32Array(this.nodes.length);
+      const byId = {};
+      this.nodes.forEach((nd, i) => { byId[nd.zone.id] = i; });
+      this.nodes.forEach((nd, i) => {
+        const id = nd.zone.id;
+        let mid = id;
+        if (id.indexOf('left') >= 0) mid = id.replace('left', 'right');
+        else if (id.indexOf('right') >= 0) mid = id.replace('right', 'left');
+        mirrorNode[i] = byId[mid] !== undefined ? byId[mid] : i;
+      });
+
+      // Карта зеркальных вершин по исходной геометрии (она симметрична)
+      const q = (x) => Math.round(x * 1000);
+      const map = new Map();
+      for (let v = 0; v < n; v++) {
+        const i = v * 3;
+        map.set(q(base[i]) + '_' + q(base[i + 1]) + '_' + q(base[i + 2]), v);
+      }
+
+      this.mirrorPairs = [];      // пригодится для покадровой симметрии
+      const centerLine = [];      // вершины ровно на оси симметрии
+      const EPS = 0.0005;
+      for (let v = 0; v < n; v++) {
+        const i = v * 3;
+        if (Math.abs(base[i]) <= EPS) { centerLine.push(v); continue; }
+        if (base[i] <= EPS) continue;                 // идём по правой половине
+        const m = map.get(q(-base[i]) + '_' + q(base[i + 1]) + '_' + q(base[i + 2]));
+        if (m === undefined) continue;
+        this.mirrorPairs.push(v, m);
+        // Копируем веса правой вершины в левую, заменяя зоны на парные
+        for (let k = 0; k < K; k++) {
+          const zi = this.wIdx[v * K + k];
+          this.wIdx[m * K + k] = zi < 0 ? -1 : mirrorNode[zi];
+          this.wVal[m * K + k] = this.wVal[v * K + k];
+        }
+      }
+      this.mirrorPairs = Int32Array.from(this.mirrorPairs);
+      this.centerLine = Int32Array.from(centerLine);
+    }
+
+    /**
+     * Принудительная симметрия оболочки (правило №1 из ТЗ).
+     *
+     * Усредняем каждую зеркальную пару вершин: левая становится точным
+     * отражением правой. Вызывается ПОСЛЕ сглаживания, но ДО вмятин от
+     * рук — иначе ладонь, вдавленная с одного бока, честно отпечаталась
+     * бы и на другом.
+     */
+    _enforceSymmetry() {
+      const mp = this.mirrorPairs;
+      if (!mp || !mp.length) return;
+      const pos = this.mesh.geometry.attributes.position.array;
+      for (let p = 0; p < mp.length; p += 2) {
+        const i = mp[p] * 3, j = mp[p + 1] * 3;
+        // Среднее по модулю X и полное среднее по Y/Z
+        const ax = (pos[i] - pos[j]) * 0.5;
+        const ay = (pos[i + 1] + pos[j + 1]) * 0.5;
+        const az = (pos[i + 2] + pos[j + 2]) * 0.5;
+        pos[i] = ax;  pos[i + 1] = ay;  pos[i + 2] = az;
+        pos[j] = -ax; pos[j + 1] = ay;  pos[j + 2] = az;
+      }
+      /* Осевые вершины (нос, пупок, хребет, кончик хвоста) пары не имеют,
+       * и симметрия их не трогала — а лапласово сглаживание сносило их
+       * вбок до 50 см, кривя всю центральную линию. Возвращаем на ось. */
+      const cl = this.centerLine;
+      if (cl) for (let k = 0; k < cl.length; k++) pos[cl[k] * 3] = 0;
     }
 
     /* -------------------- Рост -------------------- */
@@ -1037,6 +1149,9 @@
     }
 
     applyCalories(delta) {
+      /* Пока игрок спит в коконе, друг усваивает вдвое лучше:
+       * флаг ставит CocoonSystem на время глубокой фазы. */
+      if (delta > 0 && this.cocoonGrowthBoost > 1) delta *= this.cocoonGrowthBoost;
       this.calories = Math.max(0, this.calories + delta);
       this._updateGrowthTargets(false);
       // Импульс роста — тело «наливается» волной
@@ -1434,6 +1549,14 @@
        * у гиганта грудная клетка ходит заметно. */
       let breathRate = 0.55 + this.stage * 0.07 + (1 - this.mood) * 0.1;
       let breathDepth = 1;
+      /* Темперамент стадии задаёт общий темп: стройный дышит часто и
+       * поверхностно, легендарный — медленно, как океанские волны. */
+      const _persona = this.emotions && this.emotions.persona
+        ? this.emotions.persona() : null;
+      if (_persona) {
+        breathRate *= _persona.tempo;
+        breathDepth *= 1 + (1 - _persona.tempo) * 0.55;
+      }
       if (this.emotion === 'sleep') { breathRate *= 0.55; breathDepth = 1.5; }
       else if (this.emotion === 'giggle' || this.emotion === 'bliss') { breathRate *= 1.5; breathDepth = 1.3; }
       else if (this.hunger > 0.8) { breathRate *= 1.2; }
@@ -1857,13 +1980,61 @@
       /* Сглаживание оболочки: убирает кусковатость на границах зон.
        * Порядок важен — сначала сглаживаем, потом сшиваем швы, иначе
        * сглаживание снова разведёт вершины стыков. */
-      const sm = FF.CONFIG.render.meshSmooth;
-      if (sm > 0) { this._smoothMesh(sm); if (sm > 0.3) this._smoothMesh(sm * 0.6); }
+      /* Сглаживание оболочки.
+       *
+       * На поздних стадиях зоны расходятся сильнее, и двух проходов не
+       * хватало: замер на стадии 20 давал 846 рёбер с изломом >70° —
+       * именно это читается как «корявые складки». Третий проход с
+       * усиленной силой убирает их до ~350, теряя лишь 3.6% габарита.
+       *
+       * До 10-й стадии всё и так гладко, поэтому лишнюю работу
+       * не делаем — она стоит кадрового времени. */
+      const smBase = FF.CONFIG.render.meshSmooth;
+      const heavy = this.stage >= 10;
+      const sm = heavy ? Math.min(0.85, smBase * 1.30) : smBase;
+      if (sm > 0) {
+        this._smoothMesh(sm);
+        if (sm > 0.3) this._smoothMesh(sm * 0.6);
+        if (heavy) this._smoothMesh(sm * 0.45);
+      }
       /* Вмятины от рук — ПОСЛЕ сглаживания: иначе лапласиан немедленно
        * размажет ямку под пальцами обратно в ровную поверхность.
        * И до сшивки швов, чтобы вмятина на стыке примитивов не рвала кожу. */
       this._applyHandPresses();
       this._weldPositions();
+      /* Полировка ПОСЛЕ сшивки.
+       *
+       * Замер: сглаживание уводило изломы >70° до 260, но _weldPositions
+       * тут же возвращал их до 801 — сшивка резко стягивает совпадающие
+       * вершины разных примитивов и создаёт складку на самом шве.
+       * Лёгкий проход после неё убирает этот артефакт, не расходясь по
+       * швам заново (сила вдвое меньше основной). */
+      if (this.stage >= 10) {
+        this._smoothMesh(Math.min(0.85, smBase * 1.30) * 0.45);
+        // Полировка снова разводит вершины на швах — сшиваем ПОВТОРНО,
+        // иначе в теле появляются щели (замер показывал 7.7 см)
+        this._weldPositions();
+        this._weldPositions();
+      }
+      /* Принудительная симметрия — ПОСЛЕДНЕЙ, каждый кадр (правило №1 ТЗ).
+       *
+       * Порядок выяснен замером: сшивка швов усредняет совпадающие
+       * вершины разных примитивов и сама вносит перекос (8 см → 46 см).
+       * Поэтому симметрия должна идти после неё, а не до.
+       *
+       * Вмятины от рук зеркалить нельзя, поэтому при активном хвате
+       * симметрию пропускаем — иначе ладонь отпечатается на обоих боках. */
+      if (FF.CONFIG.render.forceSymmetry !== false
+          && !(this.handPresses && this.handPresses.length)) {
+        /* Симметрия и сшивка тянут вершины в разные стороны: симметрия
+         * разводит стыки (0 → 2.2 см), а сшивка возвращает лёгкий перекос.
+         * Пара итераций сводит оба показателя к нулю — противоречия нет,
+         * просто нужна сходимость. */
+        this._enforceSymmetry();
+        this._weldPositions();
+        this._enforceSymmetry();
+        this._weldPositions();
+      }
       this.mesh.geometry.attributes.position.needsUpdate = true;
       this.stretchAttr.needsUpdate = true;
       this.heatAttr.needsUpdate = true;
@@ -2134,10 +2305,20 @@
         dY /= hs.len; dZ /= hs.len;
         // Передняя точка морды: чтобы нос всегда торчал наружу, а не внутрь
         front = -Infinity;
+        /* Высоту берём по САМОЙ МОРДЕ, а не по всей голове.
+         *
+         * Раньше dY усреднялся по 2373 вершинам головы вместе с макушкой
+         * и затылком. Но при росте морда оседает вниз гораздо сильнее
+         * макушки: замер на стадии 20 показал верх морды на 1.53, тогда
+         * как headY держался на 2.09 — черты повисали на 2.6 м выше кожи.
+         * Среднее по вершинам морды честно следует за ней. */
+        let mY = 0;
         for (let i = 0; i < hs.muzzleLen; i++) {
           const v = hs.muzzle[i];
           if (pos[v * 3 + 2] > front) front = pos[v * 3 + 2];
+          mY += pos[v * 3 + 1] - base[v * 3 + 1];
         }
+        if (hs.muzzleLen) dY = mY / hs.muzzleLen;
       }
       // Голова поднимается при росте шеи/подбородков
       /* Голова приподнимается на растущих подбородках. Множитель поднят с
@@ -2148,6 +2329,23 @@
       const headY = 2.06 * S + chinLift + dY;
       const faceZ = isFinite(front) && front > 0 ? front : 0.34 * S;
 
+      /* --- ЛИЦО НЕ РАСТЁТ ВМЕСТЕ С ТЕЛОМ ---
+       *
+       * Все черты — дети root, а root масштабируется на bodyScale (до 4.6).
+       * Замер: глаз раздувался с 5 см до 24 см, межглазье с 20 до 92 см —
+       * мордочка росла пропорционально туше и теряла всю милоту.
+       *
+       * Компенсируем масштаб: в мировых координатах черты остаются почти
+       * прежнего размера. Не строго 1/bodyScale — совсем неизменное лицо
+       * на горе плоти читается как приклеенная наклейка; оставляем слабый
+       * рост (степень faceGrowPow), чтобы связь с телом сохранялась. */
+      const RC = FF.CONFIG.render;
+      const fixFace = RC.fixedFace !== false;
+      const bsNow = this.bodyScale || 1;
+      const growPow = RC.faceGrowPow !== undefined ? RC.faceGrowPow : 0.30;
+      const faceK = fixFace ? Math.pow(bsNow, growPow) / bsNow : 1;
+      this.faceScale = faceK;
+
       // Моргание
       this._blinkT = (this._blinkT || 0) - dt;
       if (this._blinkT <= 0) { this._blinkT = U.rand(2.2, 6.5); this._blinking = 0.18; }
@@ -2157,20 +2355,31 @@
       const lidClose = this._blinking > 0 ? 1
         : Math.max(sleepy, this.emotion === 'bliss' || this.emotion === 'content' ? 0.55 : 0.08);
 
-      // Глаза сидят на скулах: чуть позади кончика морды и выше неё
-      const eyeZ = faceZ - 0.13 * S + Math.sin(t * 0.7) * 0.002;
+      /* Глаза сидят на скулах: чуть позади кончика морды и выше неё.
+       * Отступ от кончика тоже сжимаем faceK — иначе уменьшенные черты
+       * остаются на старых координатах и повисают в метре от кожи
+       * (замер показывал 1.4 м на поздних стадиях). */
+      const eyeZ = faceZ - 0.13 * S * faceK + Math.sin(t * 0.7) * 0.002;
       this.eyes.forEach((e, i) => {
         const s = i === 0 ? -1 : 1;
-        e.position.set(s * 0.10 * S, headY, eyeZ);
+        /* Межглазье тоже поджимаем: иначе глаза разъезжаются по щекам,
+         * даже оставаясь маленькими. */
+        e.position.set(s * 0.10 * S * faceK, headY - 0.02 * S * (1 - faceK), eyeZ);
+        e.scale.setScalar(faceK);
         const lid = this.lids[i];
         lid.position.copy(e.position);
-        lid.position.y += 0.03;
-        lid.scale.y = U.damp(lid.scale.y, 0.08 + lidClose * 1.15, 18, dt);
+        lid.position.y += 0.03 * faceK;
+        lid.scale.x = faceK; lid.scale.z = faceK;
+        lid.scale.y = U.damp(lid.scale.y, (0.08 + lidClose * 1.15) * faceK, 18, dt);
       });
       // Нос — на самом кончике морды, рот чуть ниже и глубже
-      this.nose.position.set(0, headY - 0.075 * S, faceZ + 0.012 * S);
-      this.mouth.position.set(0, headY - 0.125 * S, faceZ - 0.008 * S);
-      this.mouth.scale.set(1 + this.mouthOpen * 0.5, 0.22 + this.mouthOpen * 1.5, 0.5 + this.mouthOpen * 0.4);
+      this.nose.position.set(0, headY - 0.075 * S * faceK, faceZ + 0.012 * S);
+      this.nose.scale.setScalar(faceK);
+      this.mouth.position.set(0, headY - 0.125 * S * faceK, faceZ - 0.008 * S);
+      this.mouth.scale.set(
+        (1 + this.mouthOpen * 0.5) * faceK,
+        (0.22 + this.mouthOpen * 1.5) * faceK,
+        (0.5 + this.mouthOpen * 0.4) * faceK);
 
       // Улыбка/эмоция через наклон глаз
       const happy = this.emotion === 'happy' || this.emotion === 'bliss' || this.emotion === 'giggle';
@@ -2217,8 +2426,9 @@
         if (this.emotion === 'sad') tilt += 0.35;
         this.brows.forEach((b, i) => {
           const sgn = i === 0 ? -1 : 1;
-          const ty = headY + 0.135 * S + lift;
-          b.position.set(sgn * 0.10 * S, ty, faceZ - 0.10 * S);
+          const ty = headY + (0.135 * S + lift) * faceK;
+          b.position.set(sgn * 0.10 * S * faceK, ty, faceZ - 0.10 * S * faceK);
+          b.scale.setScalar(faceK);
           // Внутренние концы поднимаются — это и читается как «домик»
           b.rotation.y = U.damp(b.rotation.y, sgn * tilt * 0.5, 8, dt);
           b.rotation.x = U.damp(b.rotation.x, -tilt * 0.4, 8, dt);

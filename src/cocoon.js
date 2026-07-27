@@ -20,11 +20,14 @@
   const U = FF.U;
 
   /** Фазы погружения по секундам сна */
+  /* Пороги фаз — в ДОЛЯХ от задержки стадии (delay).
+   * Так одна и та же четырёхфазная драматургия работает и за 30 секунд
+   * (очень толстый), и за 5 (легендарный). */
   const PHASES = [
-    { t: 0,   id: 'rest',    name: 'сон на теле' },
-    { t: 30,  id: 'wrap',    name: 'мягкое обволакивание' },
-    { t: 60,  id: 'sink',    name: 'глубокое погружение' },
-    { t: 120, id: 'cocoon',  name: 'внутри кокона' },
+    { t: 0, id: 'rest',   name: 'сон на теле' },
+    { t: 1, id: 'wrap',   name: 'мягкое обволакивание' },
+    { t: 2, id: 'sink',   name: 'глубокое погружение' },
+    { t: 4, id: 'cocoon', name: 'внутри кокона' },
   ];
 
   class CocoonSystem {
@@ -43,11 +46,27 @@
       game.scene.add(this.light);
     }
 
+    /** Настройки засасывания для текущей стадии (null — недоступно) */
+    absorbCfg() {
+      const f = this.game.furry;
+      if (!f || !f.emotions || !f.emotions.persona) return null;
+      return f.emotions.persona().absorb || null;
+    }
+
+    /** Через сколько секунд сна смыкаются складки (зависит от стадии) */
+    delay() {
+      const c = this.absorbCfg();
+      return c ? c.delay : 30;
+    }
+
     /** Условия: друг достаточно большой и игрок спит на нём */
     canStart() {
       const g = this.game;
       const f = g.furry;
-      if (!f || f.stage < 10) return false;
+      /* Порог берём из таблицы стадий: способность просыпается на
+       * «очень толстом» (ур. 8), а не на жёстко зашитой десятке.
+       * Раньше стадии 8-9 умели обнимать во сне только на бумаге. */
+      if (!f || !this.absorbCfg()) return false;
       const bs = g.bodySpots;
       if (!bs) return false;
       // Лежим или спрятались на теле
@@ -77,17 +96,24 @@
         if (p.keys.KeyF) { this.release('friend'); return; }
       }
 
-      /* --- Фаза по времени --- */
+      /* --- Фаза по времени ---
+       * Пороги фаз растянуты относительно delay стадии: у «очень толстого»
+       * обволакивание начинается через 30 с, у легендарного — через 5. */
+      const D = this.delay();
       let ph = PHASES[0];
-      for (const x of PHASES) if (this.sleepTime >= x.t) ph = x;
+      for (const x of PHASES) if (this.sleepTime >= x.t * D) ph = x;
       if (ph.id !== this.phase) this._enterPhase(ph);
 
-      // Глубина растёт плавно: от 0 в покое до 1 в полном коконе
-      const target = this.sleepTime < 30 ? 0
-        : this.sleepTime < 60 ? (this.sleepTime - 30) / 30 * 0.35
-        : this.sleepTime < 120 ? 0.35 + (this.sleepTime - 60) / 60 * 0.45
+      /* Глубина растёт плавно. Потолок задаёт стадия: на 8-9 игрок тонет
+       * лишь на ~60% (мягкое объятие), с 13-й — полностью. */
+      const cfg = this.absorbCfg();
+      const cap = cfg && cfg.depth !== undefined ? cfg.depth : 1;
+      const t = this.sleepTime;
+      const raw = t < D ? 0
+        : t < D * 2 ? (t - D) / D * 0.35
+        : t < D * 4 ? 0.35 + (t - D * 2) / (D * 2) * 0.45
         : 1;
-      this.depth = U.damp(this.depth, target, 0.6, dt);
+      this.depth = U.damp(this.depth, raw * cap, 0.6, dt);
 
       if (this.depth > 0.02) {
         this.active = true;
@@ -120,12 +146,28 @@
           g.notify('💫 Ты утопаешь всё глубже в мягкость', 'info');
           g.audio && g.audio.setAmbience('indoor');
           break;
-        case 'cocoon':
+        case 'cocoon': {
+          const cfg = this.absorbCfg() || {};
           g.notify('🌌 Ты внутри тёплого кокона. X — выбраться · F — позвать друга · WASD — проснуться', 'quest');
           g.achieve('inside_friend');
-          if (f.emotions) { f.emotions.e.love += 15; f.emotions.e.pride += 20; }
+          if (f.emotions) {
+            f.emotions.e.love += 15;
+            f.emotions.e.pride += 20;
+            f.emotions.e.trust += 10;      // доверие +10 по ТЗ
+          }
           f.setEmotion && f.setEmotion('bliss', 12);
+          /* Пока игрок внутри — друг растёт вдвое быстрее: он же
+           * буквально обнимает свою еду. Флаг читает growth в furry. */
+          f.cocoonGrowthBoost = 2;
+          // Мистическая стадия: особый сон-катсцена
+          if (cfg.mystical) {
+            g.notify('✨ Внутри — целый мир. Ты слышишь голос друга без слов...', 'quest');
+            f.say && f.say(U.pick(['Ты дома.', 'Здесь время не идёт...', 'Спи, я всё держу.']));
+          } else if (cfg.special) {
+            g.notify('🕊️ Складки сомкнулись в тёплую комнату. Снаружи всё стихло.', 'info');
+          }
           break;
+        }
       }
     }
 
@@ -195,6 +237,17 @@
       g.audio && g.audio.setAmbience('city');
       g.audio && g.audio.squish();
       f.wave(g.player.pos.clone(), 1.4);
+
+      // Буст роста живёт только внутри кокона
+      f.cocoonGrowthBoost = 1;
+
+      /* «Тёплый сон»: после глубокого кокона игрок какое-то время
+       * восстанавливается быстрее. Держим на игроке — его читает
+       * регенерация стамины. */
+      if (wasDeep) {
+        g.player.warmSleepTimer = 600;   // 10 минут игрового времени
+        g.notify('🌤️ Тёплый сон: восстановление ускорено на 10 минут', 'info');
+      }
 
       if (!wasDeep) return;
       switch (how) {
