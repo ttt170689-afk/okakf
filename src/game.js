@@ -584,7 +584,7 @@
         sub: 'Легендарные припасы. Очень дорого — зато очень мощно.',
         actions: [
           { act: 'vault_ing', label: '🧪 Ингредиенты (для крафта легендарных блюд)' },
-          { act: 'vault_food', label: '🍽 Готовые блюда (2000–5000 калорий за штуку)' },
+          { act: 'vault_food', label: '🍽 Готовые блюда (до 🌌 99 999 калорий за штуку)' },
           { act: 'close', label: 'Уйти' },
         ],
       });
@@ -1082,8 +1082,8 @@
             'rainbow_crystal', 'moon_dew', 'glow_mushroom', 'choco_heart'] }); break;
         case 'vault_food': this.ui.open('shop', {
           label: '⭐ Склад: готовые блюда', action: 'shop', loc: 'secretvault', vault: true,
-          shop: ['void_cake', 'time_pudding', 'sun_omelet', 'abyss_truffle',
-            'titan_shake', 'infinity_loaf'] }); break;
+          shop: ['cosmic_feast', 'void_cake', 'time_pudding', 'sun_omelet',
+            'abyss_truffle', 'titan_shake', 'infinity_loaf'] }); break;
         case 'cab_go': {
           this.ui.close();
           this.cab.startBoarding(ds.id);
@@ -1147,11 +1147,32 @@
           }
           break;
         }
+        /* Меню «чем заняться» на теле друга (сесть / прилечь / поспать...).
+         *
+         * Обработчик был только в doAction — том switch, что отвечает за
+         * взаимодействие с объектами мира. А кнопки панели идут через
+         * uiAction, где ветки bodyspot не было вовсе: switch молча
+         * доходил до конца, и нажатия не делали НИЧЕГО. */
+        case 'bodyspot':
+          if (this.bodySpots) {
+            this.ui.close();
+            this.bodySpots.perform(ds.id);
+          }
+          break;
         case 'save': this.save(); break;
         case 'load': this.load(); break;
         case 'open_ach': this.ui.open('achievements'); break;
         case 'open_help': this.ui.open('help'); break;
         case 'restart': if (confirm('Начать заново? Прогресс будет потерян.')) { localStorage.removeItem(FF.CONFIG.save.key); location.reload(); } break;
+        /* Страховка от «немых» кнопок.
+         *
+         * Раньше неизвестное действие просто проваливалось в конец
+         * switch — кнопка выглядела рабочей, но не делала ничего, и
+         * найти это можно было только вручную. Теперь любой неучтённый
+         * act сразу виден и в консоли, и игроку. */
+        default:
+          console.warn('[uiAction] неизвестное действие:', act, ds);
+          this.notify('⚠ Действие «' + act + '» пока не реализовано.', 'warn');
       }
     }
 
