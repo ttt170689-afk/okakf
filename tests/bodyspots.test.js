@@ -21,7 +21,7 @@ global.document = { createElement: () => ({ style:{}, addEventListener(){}, appe
 const _t = require('../libs/three.min.js');
 global.THREE = global.THREE || window.THREE || _t;
 for (const m of ['utils', 'config', 'physics', 'lifesystems', 'emotions', 'massphysics',
-                 'furry', 'world', 'hands', 'player', 'playerbody', 'bodyspots'])
+                 'furry', 'world', 'hands', 'player', 'playerbody', 'bodyspots', 'cocoon'])
   require('../src/' + m + '.js');
 
 const FF = global.FF;
@@ -210,4 +210,88 @@ console.log('=== 8. ФОРМА: МНОГОЯРУСНОСТЬ ===');
 }
 
 console.log('\nИТОГО: ' + pass + ' пройдено, ' + fail + ' провалено');
+if (fail) process.exitCode = 1;
+
+console.log('=== 9. КОКОН: ПОГРУЖЕНИЕ ВО СНЕ ===');
+{
+  // Гигант 10+ и игрок, лежащий на нём
+  const g = setupOnBelly(800000);
+  g.scene = scene;
+  const cocoon = new FF.CocoonSystem(g);
+  g.cocoon = cocoon;
+  t('стадия достаточно высокая', g.furry.stage >= 10, 'стадия ' + g.furry.stage);
+
+  // Пока просто стоим — кокон не запускается
+  t('без сна кокон не активен', !cocoon.canStart() || cocoon.depth === 0);
+
+  // Ложимся
+  const spot = g.bodySpots.currentSpot();
+  if (spot) g.bodySpots.perform('lie');
+  t('игрок лёг', g.bodySpots.state === 'lying', g.bodySpots.state);
+  t('условия кокона выполнены', cocoon.canStart());
+
+  // Фаза 1: первые 30 секунд — обычный сон
+  for (let i = 0; i < 60 * 20; i++) cocoon.update(dt);
+  t('до 30 с погружения нет', cocoon.depth < 0.05,
+    't=' + cocoon.sleepTime.toFixed(0) + 'с depth=' + cocoon.depth.toFixed(2));
+
+  // Фаза 2: обволакивание
+  for (let i = 0; i < 60 * 25; i++) cocoon.update(dt);
+  t('после 30 с начинается обволакивание', cocoon.depth > 0.05,
+    't=' + cocoon.sleepTime.toFixed(0) + 'с depth=' + cocoon.depth.toFixed(2));
+
+  // Фаза 4: полный кокон
+  for (let i = 0; i < 60 * 90; i++) cocoon.update(dt);
+  t('через 2 минуты — полный кокон', cocoon.depth > 0.7,
+    'depth=' + cocoon.depth.toFixed(2) + ' фаза=' + cocoon.phase);
+  t('фаза cocoon достигнута', cocoon.phase === 'cocoon', cocoon.phase);
+  t('внутри горит тёплый свет', cocoon.light.intensity > 0.5,
+    'intensity=' + cocoon.light.intensity.toFixed(2));
+  t('свет тёплый (красноватый)', cocoon.light.color.r > cocoon.light.color.b);
+  t('есть подсказка как выбраться', !!cocoon.hint());
+
+  // Восстановление
+  t('силы восстановились', g.player.stamina >= FF.CONFIG.player.maxStamina - 1,
+    g.player.stamina.toFixed(0));
+
+  // Выход по X
+  g.player.keys.KeyX = true;
+  cocoon.update(dt);
+  g.player.keys.KeyX = false;
+  t('X выбрасывает из кокона', cocoon.depth === 0 && !cocoon.active,
+    'depth=' + cocoon.depth.toFixed(2));
+}
+
+console.log('=== 10. КОКОН НЕ ДЛЯ МАЛЫХ СТАДИЙ ===');
+{
+  const g = setupOnBelly(12000);       // стадия ~4
+  const cocoon = new FF.CocoonSystem(g);
+  const spot = g.bodySpots.currentSpot();
+  if (spot) g.bodySpots.perform('lie');
+  for (let i = 0; i < 60 * 200; i++) cocoon.update(dt);
+  t('на малой стадии кокона нет', cocoon.depth < 0.02,
+    'стадия ' + g.furry.stage + ' depth=' + cocoon.depth.toFixed(3));
+}
+
+console.log('=== 11. СПОСОБЫ ВЫБРАТЬСЯ ===');
+{
+  const mk = () => {
+    const g = setupOnBelly(800000);
+    const c = new FF.CocoonSystem(g); g.cocoon = c;
+    if (g.bodySpots.currentSpot()) g.bodySpots.perform('lie');
+    for (let i = 0; i < 60 * 140; i++) c.update(dt);
+    return { g, c };
+  };
+  // Движение
+  let { g, c } = mk();
+  const deep = c.depth > 0.5;
+  g.player.keys.KeyW = true; c.update(dt); g.player.keys.KeyW = false;
+  t('WASD будит и освобождает', deep && c.depth === 0);
+  // Зов друга
+  ({ g, c } = mk());
+  g.player.keys.KeyF = true; c.update(dt); g.player.keys.KeyF = false;
+  t('F зовёт друга на помощь', c.depth === 0 && !c.active);
+}
+
+console.log('\nВСЕГО: ' + pass + ' пройдено, ' + fail + ' провалено');
 if (fail) process.exitCode = 1;

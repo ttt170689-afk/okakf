@@ -71,6 +71,8 @@
       this.massPhys = new FF.MassPhysics(this);
       // Жизнь на теле друга: сидеть, лежать, спать, прятаться в складках
       this.bodySpots = new FF.BodySpots(this);
+      // Кокон: мягкое погружение во сне на друге 10-й стадии и выше
+      this.cocoon = new FF.CocoonSystem(this);
       this.furry.quirks = this.quirks;
       this.homeUpgrades = {};
       this.ui = new FF.UI(this);
@@ -1390,6 +1392,7 @@
       this.quirks && this.quirks.update(dt);
       this.massPhys && this.massPhys.update(dt);
       this.bodySpots && this.bodySpots.update(dt);
+      this.cocoon && this.cocoon.update(dt);
       this.world.update(dt, this.gameHours, this.player.pos);
       this.taxi.update(dt);
       this.boarding.update(dt);

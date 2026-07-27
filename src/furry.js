@@ -707,6 +707,19 @@
         this.root.add(g);
         this.eyes.push(g);
       }
+      /* Брови: отдельные дужки над глазами. Без них лицо «каменное» —
+       * одни веки не передают ни удивления, ни грусти, ни хмурости. */
+      this.brows = [];
+      for (const side of [-1, 1]) {
+        const b = new THREE.Mesh(
+          new THREE.CapsuleGeometry(0.012 * S, 0.075 * S, 4, 8),
+          new THREE.MeshStandardMaterial({ color: this.species.ear, roughness: 0.85 }));
+        b.rotation.z = Math.PI / 2;
+        b.position.set(side * 0.10 * S, 2.12 * S, 0.19 * S);
+        this.root.add(b);
+        this.brows.push(b);
+      }
+
       // Веки для морганий
       this.lids = this.eyes.map((e) => {
         const lid = new THREE.Mesh(new THREE.SphereGeometry(0.056, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2),
@@ -1881,6 +1894,49 @@
       const droop = this.earDroop || 0;
       if (droop > 0.01 && this.nodeById.brow_ridges) {
         this.nodeById.brow_ridges.offset.y -= droop * 0.004;
+      }
+
+      /* --- БРОВИ ---
+       * Каждая эмоция даёт свою позу: удивление поднимает обе, грусть
+       * ставит «домиком», недовольство хмурит, сонливость опускает. */
+      if (this.brows && this.brows.length === 2) {
+        const em = this.emotions ? this.emotions.e : null;
+        let lift = 0, tilt = 0;
+        if (em) {
+          lift += (em.excitement / 100) * 0.020;      // удивлён — брови вверх
+          lift += (em.happiness / 100) * 0.008;
+          lift -= (em.sleepiness / 100) * 0.014;      // сонный — опущены
+          tilt += (em.anxiety / 100) * 0.30;          // тревога — «домиком»
+          tilt += (em.shyness / 100) * 0.16;
+        }
+        if (this.emotion === 'giggle') lift += 0.012;
+        if (this.emotion === 'sad') tilt += 0.35;
+        this.brows.forEach((b, i) => {
+          const sgn = i === 0 ? -1 : 1;
+          const ty = headY + 0.135 * S + lift;
+          b.position.set(sgn * 0.10 * S, ty, faceZ - 0.10 * S);
+          // Внутренние концы поднимаются — это и читается как «домик»
+          b.rotation.y = U.damp(b.rotation.y, sgn * tilt * 0.5, 8, dt);
+          b.rotation.x = U.damp(b.rotation.x, -tilt * 0.4, 8, dt);
+        });
+      }
+
+      /* --- ЗЕВОТА ---
+       * Сонный друг время от времени широко зевает: рот открывается,
+       * глаза жмурятся, следом идёт вздох. */
+      this._yawnT = (this._yawnT || 0) - dt;
+      if (this._yawn > 0) {
+        this._yawn -= dt;
+        const k = Math.sin(Math.max(0, this._yawn) / 1.4 * Math.PI);
+        this.mouthOpen = Math.max(this.mouthOpen, k);
+      } else if (this._yawnT <= 0) {
+        this._yawnT = U.rand(14, 40);
+        const sleepy = this.emotions ? this.emotions.e.sleepiness : 0;
+        if (sleepy > 55 && Math.random() < 0.6) {
+          this._yawn = 1.4;
+          this.audio && this.audio.voice('mur', this.opts.species, (this.voicePitch || 1) * 0.85);
+          this.say('*зевает* Ня-а-ах...');
+        }
       }
 
       this._updateTailAndWings(dt);

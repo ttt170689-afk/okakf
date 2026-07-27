@@ -184,6 +184,7 @@
   /* Общий поджим базового радиуса зоны под визуальную оболочку. */
   const BASE_FIT = 0.85;
 
+  const _tmpMat = new THREE.Matrix4();
   const _tmpV1 = new THREE.Vector3();
   const _tmpV2 = new THREE.Vector3();
   const _tmpV3 = new THREE.Vector3();
@@ -551,6 +552,130 @@
       }
 
       return result;
+    }
+
+    /* --------------------------------------------------------
+     * 3b. РЕЙКАСТ ПО САМОМУ МЕШУ (а не по зонам)
+     * -------------------------------------------------------- */
+    /**
+     * Луч по треугольникам тела.
+     *
+     * Прежний raycast бил по эллипсоидам зон — и точка хвата всегда
+     * «прилипала» к ближайшей зоне. Игрок фактически выбирал из 60
+     * предопределённых мест, а не хватался там, куда смотрит.
+     *
+     * Здесь мы пересекаем ЛУЧ С ТРЕУГОЛЬНИКАМИ настоящего меша. Точка
+     * хвата — ровно точка пересечения, любой миллиметр поверхности:
+     * кончик уха, складочка между валиками, место между лопатками.
+     *
+     * Возвращаем ещё и треугольник с барицентрическими координатами —
+     * по ним захват «приклеивается» к поверхности и едет вместе с
+     * деформацией, а свойства (мягкость, глубина) считаются смешиванием
+     * весов трёх вершин, а не берутся из зоны.
+     *
+     * @returns {object|null} {point, normal, tri:[a,b,c], bary:[u,v,w], distance}
+     */
+    raycastMesh(originWorld, dirWorld, maxDist) {
+      const f = this.furry;
+      const geo = f.mesh.geometry;
+      const pos = geo.attributes.position.array;
+      const idx = geo.index.array;
+
+      // Луч в локальное пространство меша (дешевле, чем гонять вершины в мир)
+      f.mesh.updateMatrixWorld();
+      const inv = _tmpMat.copy(f.mesh.matrixWorld).invert();
+      const o = _tmpV1.copy(originWorld).applyMatrix4(inv);
+      const d = _tmpV2.copy(dirWorld).transformDirection(inv).normalize();
+      // maxDist задан в мире; масштаб меша ~bodyScale
+      const scale = f.bodyScale || 1;
+      const maxT = maxDist / scale;
+
+      let bestT = maxT, ba = -1, bb = -1, bc = -1, bu = 0, bv = 0;
+
+      // Möller–Trumbore по всем треугольникам. Вызывается только по клику,
+      // поэтому полный перебор дешевле, чем поддерживать BVH на меше,
+      // который деформируется каждый кадр.
+      for (let i = 0, n = idx.length; i < n; i += 3) {
+        const ia = idx[i] * 3, ib = idx[i + 1] * 3, ic = idx[i + 2] * 3;
+        const ax = pos[ia], ay = pos[ia + 1], az = pos[ia + 2];
+        const e1x = pos[ib] - ax, e1y = pos[ib + 1] - ay, e1z = pos[ib + 2] - az;
+        const e2x = pos[ic] - ax, e2y = pos[ic + 1] - ay, e2z = pos[ic + 2] - az;
+
+        const px = d.y * e2z - d.z * e2y;
+        const py = d.z * e2x - d.x * e2z;
+        const pz = d.x * e2y - d.y * e2x;
+        const det = e1x * px + e1y * py + e1z * pz;
+        if (det > -1e-9 && det < 1e-9) continue;      // луч параллелен грани
+        const invDet = 1 / det;
+
+        const tx = o.x - ax, ty = o.y - ay, tz = o.z - az;
+        const u = (tx * px + ty * py + tz * pz) * invDet;
+        if (u < -1e-6 || u > 1 + 1e-6) continue;
+
+        const qx = ty * e1z - tz * e1y;
+        const qy = tz * e1x - tx * e1z;
+        const qz = tx * e1y - ty * e1x;
+        const v = (d.x * qx + d.y * qy + d.z * qz) * invDet;
+        if (v < -1e-6 || u + v > 1 + 1e-6) continue;
+
+        const tHit = (e2x * qx + e2y * qy + e2z * qz) * invDet;
+        if (tHit <= 1e-5 || tHit >= bestT) continue;
+
+        bestT = tHit; ba = idx[i]; bb = idx[i + 1]; bc = idx[i + 2]; bu = u; bv = v;
+      }
+      if (ba < 0) return null;
+
+      const w = 1 - bu - bv;
+      // Точка в локальных координатах меша
+      const lx = pos[ba*3] * w + pos[bb*3] * bu + pos[bc*3] * bv;
+      const ly = pos[ba*3+1] * w + pos[bb*3+1] * bu + pos[bc*3+1] * bv;
+      const lz = pos[ba*3+2] * w + pos[bb*3+2] * bu + pos[bc*3+2] * bv;
+      const point = new THREE.Vector3(lx, ly, lz).applyMatrix4(f.mesh.matrixWorld);
+
+      // Нормаль грани
+      const nrm = geo.attributes.normal.array;
+      const normal = new THREE.Vector3(
+        nrm[ba*3] * w + nrm[bb*3] * bu + nrm[bc*3] * bv,
+        nrm[ba*3+1] * w + nrm[bb*3+1] * bu + nrm[bc*3+1] * bv,
+        nrm[ba*3+2] * w + nrm[bb*3+2] * bu + nrm[bc*3+2] * bv
+      ).transformDirection(f.mesh.matrixWorld).normalize();
+
+      return {
+        point, normal,
+        tri: [ba, bb, bc], bary: [w, bu, bv],
+        distance: bestT * scale,
+      };
+    }
+
+    /**
+     * Свойства поверхности В ТОЧКЕ (а не «в зоне»).
+     *
+     * Смешиваем характеристики узлов, влияющих на три вершины грани, с
+     * учётом их весов в скиннинге и барицентрики. Точка на границе живота
+     * и бока получит промежуточные свойства — как и должно быть.
+     */
+    surfaceAt(tri, bary) {
+      const f = this.furry;
+      const K = f.K;
+      let soft = 0, growth = 0, wsum = 0, cellul = 0;
+      let bestW = -1, dominant = null;
+      for (let k = 0; k < 3; k++) {
+        const v = tri[k], bw = bary[k];
+        for (let j = 0; j < K; j++) {
+          const zi = f.wIdx[v * K + j];
+          if (zi < 0) break;
+          const w = f.wVal[v * K + j] * bw;
+          const nd = f.nodes[zi];
+          soft += nd.soft * w;
+          growth += nd.growth * w;
+          cellul += (nd.zone.cellulite || 0) * w;
+          wsum += w;
+          if (w > bestW) { bestW = w; dominant = nd; }
+        }
+      }
+      if (wsum < 1e-6) return { soft: 0.5, growth: 0.2, node: f.nodeById.mid_belly, cellulite: 0 };
+      return { soft: soft / wsum, growth: growth / wsum,
+               cellulite: cellul / wsum, node: dominant };
     }
 
     /* --------------------------------------------------------

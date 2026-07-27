@@ -40,8 +40,8 @@
 
       // Руки: каждая может быть свободна / держаться за узел
       this.hands = [
-        { side: -1, grip: null, mesh: null, target: new THREE.Vector3(), rest: new THREE.Vector3(-0.28, -0.22, -0.55) },
-        { side: 1, grip: null, mesh: null, target: new THREE.Vector3(), rest: new THREE.Vector3(0.28, -0.22, -0.55) },
+        { side: -1, grip: null, reaching: null, mesh: null, target: new THREE.Vector3(), rest: new THREE.Vector3(-0.28, -0.22, -0.55) },
+        { side: 1, grip: null, reaching: null, mesh: null, target: new THREE.Vector3(), rest: new THREE.Vector3(0.28, -0.22, -0.55) },
       ];
       this.climbing = false;
       this.mode = 'walk';      // walk | climb | underbelly | onbelly | ride | sit
@@ -96,7 +96,17 @@
       const hand = button === 0 ? this.hands[0] : this.hands[1];
       if (button === 0) this.mouse.left = false;
       if (button === 2) this.mouse.right = false;
-      if (hand.grip) { hand.grip = null; this._checkClimbState(); }
+      // Отпускаем и захват, и незавершённый замах
+      if (hand.reaching) { hand.reaching = null; hand.anim.releaseReach(); hand.anim.setPose('rest'); }
+      if (hand.grip) {
+        // Пальцы разжимаются, жир возвращается с «плюхом»
+        const nd = hand.grip.node;
+        if (nd) { nd.impulse(_tmpDown.set(0, -1, 0), 5); nd.contactPress = 0; }
+        this.audio && this.audio.squish();
+        hand.grip = null;
+        hand.anim.setPose('rest');
+        this._checkClimbState();
+      }
     }
 
     /** Попытка схватиться за тело / тычок */
@@ -106,46 +116,60 @@
       const reach = FF.CONFIG.player.reach * (0.8 + this.furry.bodyScale * 0.35);
       const hit = origin.clone().addScaledVector(dir, reach * 0.6);
 
-      // Точный рейкаст по эллипсоидам зон — попадаем именно туда, куда смотрим
+      /* РЕЙКАСТ ПО САМОМУ МЕШУ.
+       *
+       * Никаких «зон захвата»: луч из камеры пересекает треугольники тела,
+       * и точкой хвата становится ровно место пересечения — любой миллиметр
+       * поверхности. Свойства (мягкость, глубина погружения, скользкость)
+       * считаются динамически смешиванием весов трёх вершин грани, а не
+       * берутся из предопределённой зоны. */
       let best = null, bestD = Infinity;
-      const ray = this.furry.physics && this.furry.physics.raycast(origin, dir, reach);
-      if (ray && ray.node.zone.grab && ray.node.growth > 0.05) {
-        const foldBonus = ray.node.zone.folds.filter((t) => this.furry.calories >= t).length * 0.14;
-        best = { node: ray.node, pos: ray.point,
-          quality: U.clamp(ray.node.growth * (0.35 + ray.node.soft * 0.5) + foldBonus - this.furry.wet * 0.35, 0.05, 1) };
-        bestD = ray.distance;
+      const mh = this.furry.physics && this.furry.physics.raycastMesh(origin, dir, reach);
+      if (mh) {
+        const surf = this.furry.physics.surfaceAt(mh.tri, mh.bary);
+        const nd = surf.node;
+        const foldBonus = nd.zone.folds.filter((t) => this.furry.calories >= t).length * 0.14;
+        const familiar = (nd.familiarity || 0) * 0.15;
+        // Плоская грань (нормаль почти горизонтальна) держит хуже, чем
+        // выступ или складка, куда пальцы реально заходят.
+        const grip = 0.35 + surf.soft * 0.5;
+        const q = surf.growth * grip + foldBonus + familiar - this.furry.wet * 0.35;
+        best = {
+          node: nd, pos: mh.point, normal: mh.normal,
+          tri: mh.tri, bary: mh.bary, surf,
+          quality: U.clamp(q, 0.08, 1),
+        };
+        bestD = mh.distance;
       } else {
+        // Луч мимо меша — пробуем ближайшие точки (страховка на случай,
+        // если игрок целится в самый край силуэта)
         const points = this.furry.grabPoints();
         for (const p of points) {
           const d = p.pos.distanceTo(hit);
           if (d < reach && d < bestD) { bestD = d; best = p; }
         }
       }
+
       if (best && bestD < reach) {
         if (this.keys.ShiftLeft || this.mode === 'climb' || !this.onGround || best.pos.y > this.pos.y + 0.5) {
-          // ХВАТ: рука не просто «цепляется за точку» — она проваливается
-          // в плоть. Запоминаем, НАСКОЛЬКО глубоко утонули пальцы: по этой
-          // глубине потом тянется складка и сминается жир под кистью.
-          const soft = best.node.soft * best.node.growth;
-          const depth = (0.06 + soft * 0.26) * this.furry.bodyScale;
-          const inward = this.furry.root.worldToLocal(best.pos.clone())
-            .normalize().multiplyScalar(-depth);
-          const anchor = this.furry.root.worldToLocal(best.pos.clone()).add(inward);
-          hand.grip = {
+          /* ЗАМАХ, А НЕ ТЕЛЕПОРТ.
+           *
+           * Раньше кисть мгновенно оказывалась в точке хвата — движение не
+           * читалось, и лазание ощущалось как «клик по кнопке». Теперь рука
+           * получает цель и ЛЕТИТ к ней ~0.3 с (см. _updateReaching):
+           * плечо разворачивается, ладонь раскрывается, пальцы касаются
+           * плоти и только затем смыкаются. Захват фиксируется в конце. */
+          hand.reaching = {
             node: best.node,
-            offset: anchor,          // якорь ВНУТРИ жира, а не на поверхности
+            // Точку помним в системе тела: друг дышит и колышется,
+            // цель должна ехать вместе с плотью, а не висеть в воздухе.
+            local: this.furry.root.worldToLocal(best.pos.clone()),
             quality: best.quality,
-            slip: 0,
-            depth,                   // глубина погружения кисти
-            surface: this.furry.root.worldToLocal(best.pos.clone()),
+            t: 0,
+            dur: 0.30 + Math.min(0.2, bestD / reach * 0.2),   // дальше — дольше
+            dir: dir.clone(),
           };
-          // Плоть сминается под кистью и тянется за рукой
-          best.node.press(dir, 0.55 + soft * 0.5);
-          best.node.impulse(dir, 6 + soft * 8);
-          this.audio && this.audio.squish();
-          this.furry.wave(best.pos, 0.4);
-          hand.anim.kick(0.35);
-          hand.anim.contactDepth = 0.85;
+          hand.anim.setPose('palm', 1);      // ладонь раскрывается в полёте
           this._checkClimbState();
           return;
         }
@@ -193,6 +217,7 @@
         if (this.furry.zoneAt(hit, 0.9)) this.furry.massage(hit, dir, dt);
       }
 
+      this._updateReaching(dt);
       this._updateHands(dt);
       this._updateCamera(dt);
       this._updateModes(dt);
@@ -564,6 +589,77 @@
         if (++hits >= 3) return decide(true);   // три попадания — уверенно «под»
       }
       return decide(false);
+    }
+
+    /* -------------------- Полёт руки к точке хвата -------------------- */
+    /**
+     * Плавное движение кисти к цели вместо мгновенного захвата.
+     *
+     * Фазы (как в PEAK):
+     *   0.0 .. 0.75  рука летит по дуге, ладонь раскрыта;
+     *   0.75 .. 1.0  пальцы касаются плоти и смыкаются;
+     *   1.0          захват зафиксирован, дальше работает _updateClimb.
+     *
+     * Цель хранится в координатах тела, поэтому «уезжает» вместе с
+     * колышущейся плотью — рука не промахивается по дышащему животу.
+     */
+    _updateReaching(dt) {
+      for (const h of this.hands) {
+        const r = h.reaching;
+        if (!r) continue;
+
+        // Кнопку отпустили на полпути — отменяем замах
+        const held = (h.side < 0 && this.mouse.left) || (h.side > 0 && this.mouse.right);
+        if (!held && r.t < 0.7) {
+          h.reaching = null;
+          h.anim.releaseReach();
+          h.anim.setPose('rest');
+          continue;
+        }
+
+        r.t += dt / r.dur;
+        const world = this.furry.root.localToWorld(r.local.clone());
+
+        if (r.t < 1) {
+          // Летим: ведём кисть к цели, вес IK нарастает
+          const e = r.t * r.t * (3 - 2 * r.t);       // сглаживание
+          h.anim.reachTo(world, Math.min(1, e * 1.2));
+          // Ближе к цели ладонь начинает собираться в хват
+          if (r.t > 0.75) {
+            h.anim.setPose('grip', (r.t - 0.75) / 0.25 * 0.9);
+          }
+          continue;
+        }
+
+        /* --- Касание: фиксируем захват --- */
+        const nd = r.node;
+        const soft = nd.soft * nd.growth;
+        const depth = (0.06 + soft * 0.26) * this.furry.bodyScale;
+        const inward = r.local.clone().normalize().multiplyScalar(-depth);
+        h.grip = {
+          node: nd,
+          offset: r.local.clone().add(inward),   // якорь ВНУТРИ жира
+          quality: r.quality,
+          slip: 0,
+          depth,
+          surface: r.local.clone(),
+        };
+        h.reaching = null;
+
+        // Плоть сминается под кистью
+        nd.press(r.dir, 0.55 + soft * 0.5);
+        nd.impulse(r.dir, 6 + soft * 8);
+        this.audio && this.audio.squish();
+        this.furry.wave(world, 0.4);
+        h.anim.kick(0.35);
+        h.anim.contactDepth = 0.85;
+        // Друг замечает прикосновение именно к этой зоне
+        if (this.furry.quirks) {
+          this.furry.quirks.remember(nd.zone.id);
+          this.furry.quirks.onGentleTouch();
+        }
+        this._checkClimbState();
+      }
     }
 
     /* -------------------- Анти-застревание -------------------- */
