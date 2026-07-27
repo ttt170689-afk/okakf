@@ -302,8 +302,12 @@
 
       // Прыжок
       if (this.keys.Space && this.onGround) {
-        // Батут на животе
-        if (this.mode === 'onbelly') {
+        /* Батут на животе отключён по просьбе игрока: стоя на друге,
+         * Space делает обычный небольшой прыжок, а не подбрасывает
+         * на всю высоту упругой плоти. Саму механику bounce() не
+         * трогаем — она нужна для действия «Попрыгать» в меню (E),
+         * где игрок сознательно выбирает батут. */
+        if (this.mode === 'onbelly' && FF.CONFIG.player.bellyTrampoline) {
           const power = this.furry.bounce(this.pos.clone().add(new THREE.Vector3(0, -0.5, 0)), 1);
           this.vel.y = power;
           FF.Game && FF.Game.achieve('bounce', this.furry.stats.bounces >= 50);
@@ -1050,7 +1054,7 @@
 
       if (this.mode !== prev) {
         if (this.mode === 'onbelly') {
-          FF.Game && FF.Game.notify('🏔️ Ты на животе друга! Space — прыжок-батут', 'info');
+          FF.Game && FF.Game.notify('🏔️ Ты на животе друга! E — сесть, прилечь, поспать', 'info');
           f.setEmotion('giggle', 3);
         }
         if (this.mode === 'underbelly') {

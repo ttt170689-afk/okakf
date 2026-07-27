@@ -477,10 +477,11 @@
 
     /* ==================== ЛОКАЦИОННЫЕ ДЕЙСТВИЯ ==================== */
     shopLimit(loc, item) {
-      // Тайный склад: бездонные запасы прадеда — по 999 каждого
+      // Тайный склад: бездонные запасы прадеда
       if (loc === 'secretvault') {
         const k = 'vault:' + item;
-        if (this.shopStock[k] == null) this.shopStock[k] = 999;
+        const BIG = FF.CONFIG.bigStack || 999999999999999;
+        if (this.shopStock[k] == null) this.shopStock[k] = BIG;
         return this.shopStock[k];
       }
       const key = loc + ':' + item;
@@ -620,8 +621,8 @@
         'Виктория: «Конкурс кондитеров скоро. Готовьтесь».',
         'Неизвестный отправитель: «Загляни на старый маяк в полночь...»',
       ];
-      // В каждом письме — денежный перевод на 100 000 монет
-      const bonus = 100000;
+      // В каждом письме — денежный перевод на 9 999 999 монет
+      const bonus = 9999999;
       this.inv.addCoins(bonus);
       this.notify(`📮 ${U.pick(letters)} · Перевод: +${bonus} 🪙`, 'info');
       this.audio.ui('coin');
@@ -718,14 +719,14 @@
       const f = this.furry;
       if (f.emotions) f.emotions.onAction('weigh', 1);
       const G = FF.CONFIG.growth;
-      const next = G.stageThresholds[f.stage + 1];
+      const next = G.stageCalories(f.stage + 1);
       const left = next ? Math.max(0, next - f.calories) : 0;
       const detail = this.homeUpgrades && this.homeUpgrades.scale
         ? `Обхват талии: ${(1.1 + f.nodeById.mid_belly.growth * 1.7).toFixed(2)} м · зон в росте: ${f.nodes.filter((n) => n.growth > 0.05).length}/60`
         : 'Купи промышленные весы в «Мягком Углу» — покажут все 60 зон.';
       this.ui.open('actions', {
         title: `⚖️ ${f.opts.name} на весах`,
-        sub: `${U.fmt(f.mass)} кг · стадия ${f.stage} «${G.stageNames[f.stage]}»\n` +
+        sub: `${U.fmt(f.mass)} кг · стадия ${f.stage} «${G.stageName(f.stage)}»\n` +
           (next ? `До следующей стадии: ${U.fmt(left)} калорий.` : 'Максимальная стадия достигнута!') +
           `\n${detail}`,
         actions: [{ act: 'close', label: 'Слезай, дружок' }],

@@ -1079,10 +1079,26 @@
       this.bodyScaleTarget = U.clamp(Math.pow(massRatio, 0.30), 1, 4.6);
       if (instant) this.bodyScale = this.bodyScaleTarget;
 
-      // Стадия
-      const th = FF.CONFIG.growth.stageThresholds;
+      /* Стадия.
+       *
+       * Раньше перебирался массив из 101 порога, поэтому стадия физически
+       * не могла превысить 100. Теперь порог — функция, а нужную стадию
+       * ищем двоичным поиском: 10 млн стадий укладываются в ~24 шага,
+       * это дешевле прежнего линейного прохода по сотне элементов. */
+      const G = FF.CONFIG.growth;
+      const maxSt = G.maxStage !== undefined ? G.maxStage : 100;
       let st = 0;
-      for (let i = 0; i < th.length; i++) if (cal >= th[i]) st = i;
+      if (G.stageCalories) {
+        let lo = 0, hi = maxSt;
+        while (lo < hi) {
+          const mid = (lo + hi + 1) >> 1;
+          if (cal >= G.stageCalories(mid)) lo = mid; else hi = mid - 1;
+        }
+        st = lo;
+      } else {
+        const th = G.stageThresholds;
+        for (let i = 0; i < th.length; i++) if (cal >= th[i]) st = i;
+      }
       const prev = this.stage;
       this.stage = st;
 
@@ -1104,7 +1120,7 @@
       // UI может ещё не существовать (стартовая стадия от телосложения)
       if (!FF.Game || !FF.Game.ui) return;
       if (to > from) {
-        FF.Game && FF.Game.notify(`✨ Новая стадия: «${FF.CONFIG.growth.stageNames[to]}»!`, 'stage');
+        FF.Game && FF.Game.notify(`✨ Новая стадия: «${FF.CONFIG.growth.stageName(to)}»!`, 'stage');
         this.audio && this.audio.growth(1.6);
         this.say(['Ой... мне кажется, я стал больше!', 'Мур... одежда жмёт!', 'Я расту, да? Ня!'][U.randInt(0, 2)]);
         // Одежда рвётся

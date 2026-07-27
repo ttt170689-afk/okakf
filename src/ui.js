@@ -68,9 +68,9 @@
       const g = this.game, f = g.furry, inv = g.inv, p = g.player;
       this.updateCabinHUD();
       this.updateCabHUD();
-      const stageName = FF.CONFIG.growth.stageNames[f.stage];
-      const nextTh = FF.CONFIG.growth.stageThresholds[f.stage + 1];
-      const prevTh = FF.CONFIG.growth.stageThresholds[f.stage];
+      const stageName = FF.CONFIG.growth.stageName(f.stage);
+      const nextTh = FF.CONFIG.growth.stageCalories(f.stage + 1);
+      const prevTh = FF.CONFIG.growth.stageCalories(f.stage);
       const prog = nextTh ? U.clamp((f.calories - prevTh) / (nextTh - prevTh), 0, 1) : 1;
 
       this.topLeft.innerHTML = `
@@ -283,7 +283,9 @@
               <div class="ic">${it.icon}</div><div class="nm">${it.name}</div>
               <div class="sm">${it.price} 🪙${it.cal ? ' · ' + it.cal + ' кал' : ''}</div>
               <div class="sm ${limit <= 0 ? 'red' : ''}">${
-                limit <= 0 ? 'сегодня всё' : limit >= 999 ? '∞ запас: 999' : 'осталось: ' + limit}</div></div>`;
+                limit <= 0 ? 'сегодня всё'
+                  : limit >= 1e6 ? '∞ запас'
+                  : 'осталось: ' + limit}</div></div>`;
             /* Отдельная кнопка «взять всё»: берёт столько, сколько
              * позволяют кошелёк и остаток на прилавке. Кнопка вынесена
              * из карточки, иначе клик по ней считался бы обычной покупкой
@@ -294,7 +296,9 @@
               html += `<div class="item ${n <= 0 ? 'dis' : ''}" data-act="buy_all" data-id="${id}"
                 data-loc="${data.loc || 'stall'}" data-ing="${isIng ? 1 : 0}">
                 <div class="ic">🛒</div><div class="nm">Взять всё</div>
-                <div class="sm">${n > 0 ? '×' + n + ' — ' + (it.price * n) + ' 🪙' : 'не хватает монет'}</div></div>`;
+                <div class="sm">${n > 0
+                  ? '×' + (n >= 1e6 ? n.toExponential(2) : n) + ' — ' + U.fmt(it.price * n) + ' 🪙'
+                  : 'не хватает монет'}</div></div>`;
             }
           }
           html += '</div><p class="hint">В этом мире еды МАЛО: у каждой лавки дневной лимит. Готовь сам, ищи ингредиенты, выполняй задания!</p>';
@@ -626,7 +630,7 @@
         /* ---------- СТАТИСТИКА ФУРРИ ---------- */
         case 'stats': {
           const f = g.furry;
-          html = head('📊 ' + f.opts.name, `${f.species.name} · стадия ${f.stage} «${FF.CONFIG.growth.stageNames[f.stage]}»`);
+          html = head('📊 ' + f.opts.name, `${f.species.name} · стадия ${f.stage} «${FF.CONFIG.growth.stageName(f.stage)}»`);
           html += `<div class="p-body">
             <div class="statgrid">
               <div><b>${U.fmt(f.calories)}</b><span>калорий всего</span></div>

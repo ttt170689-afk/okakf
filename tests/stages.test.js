@@ -220,5 +220,92 @@ console.log('=== 4. ЧЕТЫРЕ ФАЗЫ И ЧЕТЫРЕ ВЫХОДА ===');
   }
 }
 
+
+/* ============================================================
+ * 5. СВЕРХБОЛЬШИЕ ЧИСЛА (уровень до 9 999 999, запасы, почта)
+ * ------------------------------------------------------------
+ * Главная опасность тут — не логика, а предел точности JS:
+ * за Number.MAX_SAFE_INTEGER выражение x+1 === x, и счётчики
+ * молча замирают. Эти проверки ловят такое переполнение.
+ * ============================================================ */
+console.log('=== 5. СВЕРХБОЛЬШИЕ ЧИСЛА ===');
+{
+  const G = FF.CONFIG.growth;
+  const MAX = Number.MAX_SAFE_INTEGER;
+
+  t('потолок стадий = 9 999 999', G.maxStage === 9999999, String(G.maxStage));
+  t('порог считается функцией, а не массивом', typeof G.stageCalories === 'function');
+  t('имя стадии считается функцией', typeof G.stageName === 'function');
+
+  const last = G.stageCalories(G.maxStage);
+  t('порог последней стадии в пределах точности', last < MAX,
+    last.toExponential(2) + ' против ' + MAX.toExponential(2));
+  t('порог последней стадии конечен', isFinite(last) && last > 0);
+
+  // Пороги обязаны строго расти — иначе стадии «слипнутся»
+  let mono = true, prev = -1, bad = -1;
+  for (let i = 0; i <= G.maxStage; i += 1009) {
+    const v = G.stageCalories(i);
+    if (!(v > prev)) { mono = false; bad = i; break; }
+    prev = v;
+  }
+  t('пороги строго растут на всём диапазоне', mono,
+    mono ? 'проверено ~9910 точек' : 'сбой на стадии ' + bad);
+
+  // Соседние стадии не должны совпадать по порогу (признак переполнения)
+  let dupes = 0;
+  for (const i of [100, 5000, 100000, 1000000, 9999998]) {
+    if (G.stageCalories(i + 1) <= G.stageCalories(i)) dupes++;
+  }
+  t('соседние стадии различимы', dupes === 0, dupes + ' совпадений');
+
+  // Имена не должны отваливаться в undefined за пределами старого массива
+  let named = 0;
+  const probes = [0, 10, 11, 100, 101, 5000, 999999, 9999999];
+  for (const i of probes) {
+    const n = G.stageName(i);
+    if (typeof n === 'string' && n.length > 0 && !/undefined/.test(n)) named++;
+  }
+  t('имя есть у любой стадии', named === probes.length, named + '/' + probes.length);
+  t('финальная стадия — Сфера Бытия', /Сфера Бытия/.test(G.stageName(9999999)),
+    G.stageName(9999999));
+
+  // Движок должен реально доводить друга до заявленных стадий
+  const scene5 = new THREE.Scene();
+  let reached = 0;
+  const targets = [10, 100, 5000, 1000000, 9999999];
+  for (const st of targets) {
+    const f = new FF.FurryEngine(scene5,
+      { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio);
+    f.calories = G.stageCalories(st);
+    f._updateGrowthTargets(true);
+    if (f.stage === st) reached++;
+    scene5.remove(f.root);
+  }
+  t('движок достигает больших стадий', reached === targets.length,
+    reached + '/' + targets.length);
+
+  // Запасы склада
+  const BIG = FF.CONFIG.bigStack;
+  t('bigStack задан', typeof BIG === 'number' && BIG > 1e12, String(BIG));
+  t('bigStack не переполняет точность', BIG < MAX);
+  t('счётчик запаса реально уменьшается', BIG - 1 !== BIG,
+    'иначе покупки не списывались бы');
+
+  // Формат больших чисел
+  t('U.fmt переваривает триллионы', /трлн/.test(FF.U.fmt(7e12)), FF.U.fmt(7e12));
+  t('U.fmt переваривает квадриллионы', /квадр/.test(FF.U.fmt(2e15)), FF.U.fmt(2e15));
+}
+
+console.log('=== 6. ПРЫЖОК НА ДРУГЕ ОТКЛЮЧЁН ===');
+{
+  t('флаг батута выключен', FF.CONFIG.player.bellyTrampoline === false);
+  // Механика «Попрыгать» из меню должна остаться доступной
+  const acts = FF.BODY_SPOTS ? null : null;
+  t('bounce() у друга сохранён', typeof (new FF.FurryEngine(new THREE.Scene(),
+    { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio).bounce) === 'function',
+    'нужен для действия «Попрыгать» (E)');
+}
+
 console.log('\nВСЕГО: ' + pass + ' пройдено, ' + fail + ' провалено');
 if (fail) process.exitCode = 1;

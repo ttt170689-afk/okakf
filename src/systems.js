@@ -544,7 +544,6 @@
 
     /** Автозаписи о важных событиях */
     onStage(stage) {
-      const names = FF.CONFIG.growth.stageNames;
       const texts = [
         'Сегодня мы начали наш путь. Он такой маленький и мягкий.',
         'Он стал заметно круглее. Уже не помещается в старую футболку.',
@@ -558,7 +557,7 @@
         'ИМБА. Он превзошёл всё, что описывал прадед Артёма.',
         'Легенда Sugar City. Мы сделали это. Вместе.',
       ];
-      this.add(`📈 Стадия ${stage}: «${names[stage]}». ${texts[stage] || ''}`, 'stage');
+      this.add(`📈 Стадия ${stage}: «${FF.CONFIG.growth.stageName(stage)}». ${texts[stage] || ''}`, 'stage');
     }
 
     onFirstVisit(locName) { this.add(`📍 Впервые побывали здесь: ${locName}.`, 'place'); }
