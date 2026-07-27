@@ -257,5 +257,72 @@ console.log('=== 8. ХВАТ ЗА ЛЮБУЮ ТОЧКУ МЕША (без зон)
   }
 }
 
+console.log('=== 9. ЛИЦО КАК НА АРТАХ ===');
+{
+  const mk = (cal) => {
+    const f = new FF.FurryEngine(scene,
+      { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio);
+    f.calories = cal; f._updateGrowthTargets(true);
+    for (let i = 0; i < 60; i++) f.update(dt, 12);
+    return f;
+  };
+  const head = (f) => {
+    const pos = f.mesh.geometry.attributes.position.array;
+    const part = f.mesh.geometry.attributes.part.array;
+    let w = 0, y0 = 1e9, y1 = -1e9, chinZ = 0, muzZ = 0;
+    for (let v = 0; v < f.vertexCount; v++) {
+      if ((part[v] | 0) !== 3) continue;
+      const r = Math.hypot(pos[v*3], pos[v*3+2]); if (r > w) w = r;
+      const y = pos[v*3+1]; if (y < y0) y0 = y; if (y > y1) y1 = y;
+    }
+    for (let v = 0; v < f.vertexCount; v++) {
+      if ((part[v] | 0) !== 3) continue;
+      if (Math.abs(pos[v*3]) > 0.1 * f.bodyScale) continue;
+      const t2 = (pos[v*3+1] - y0) / (y1 - y0);
+      if (t2 < 0.3 && pos[v*3+2] > chinZ) chinZ = pos[v*3+2];
+      if (t2 > 0.45 && t2 < 0.7 && pos[v*3+2] > muzZ) muzZ = pos[v*3+2];
+    }
+    return { w: w * 2, h: y1 - y0, chinZ, muzZ };
+  };
+
+  const slim = head(mk(0)), fat = head(mk(250000));
+  t('лицо круглое (ширина > высоты)', fat.w > fat.h,
+    'Ш=' + fat.w.toFixed(2) + ' В=' + fat.h.toFixed(2) + ' → ' + (fat.w/fat.h).toFixed(2));
+  t('подбородки выступают вперёд', fat.chinZ > fat.muzZ * 0.9,
+    'подбородок=' + fat.chinZ.toFixed(2) + ' морда=' + fat.muzZ.toFixed(2));
+  t('с массой подбородки растут', fat.chinZ / fat.muzZ > slim.chinZ / slim.muzZ,
+    slim.chinZ.toFixed(2) + '/' + slim.muzZ.toFixed(2) + ' → ' +
+    fat.chinZ.toFixed(2) + '/' + fat.muzZ.toFixed(2));
+  const f = mk(250000);
+  t('щёки заметно наливаются', f.nodeById.left_cheek.growth > 0.6,
+    'growth=' + f.nodeById.left_cheek.growth.toFixed(2));
+  t('три подбородка растут по очереди',
+    f.nodeById.chin1.growth >= f.nodeById.chin2.growth &&
+    f.nodeById.chin2.growth >= f.nodeById.chin3.growth,
+    [f.nodeById.chin1, f.nodeById.chin2, f.nodeById.chin3]
+      .map((n) => n.growth.toFixed(2)).join(' ≥ '));
+}
+
+console.log('=== 10. IDLE-ЖИЗНЬ (никогда не замирает) ===');
+{
+  const f = new FF.FurryEngine(scene,
+    { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'M' }, audio);
+  f.calories = 60000; f._updateGrowthTargets(true);
+  /* Сценки выбираются случайно, поэтому за короткий прогон конкретная
+   * может не выпасть. Гоняем дольше и голодным — тогда «похлопать пузо»
+   * попадает в пул чаще (так и задумано: голодный трогает живот). */
+  const kinds = new Set();
+  for (let i = 0; i < 60 * 400; i++) {
+    if (f.emotions) f.emotions.e.hunger = 70;   // держим голод высоким
+    f.update(dt, 12);
+    if (f._idleAct) kinds.add(f._idleAct.kind);
+  }
+  t('играются разные бытовые сценки', kinds.size >= 4,
+    kinds.size + ' разных: ' + [...kinds].join(', '));
+  t('голодный трогает живот или нюхает',
+    kinds.has('pat') || kinds.has('sniff'), [...kinds].join(', '));
+  t('есть потягивание', kinds.has('stretch'));
+}
+
 console.log('\nВСЕГО: ' + pass + ' пройдено, ' + fail + ' провалено');
 if (fail) process.exitCode = 1;

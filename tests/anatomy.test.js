@@ -165,5 +165,63 @@ console.log('=== 6. КАЧЕСТВО ОБОЛОЧКИ (гладкость, бе�
     'meshSmooth=' + FF.CONFIG.render.meshSmooth);
 }
 
+console.log('=== 7. ЖИВОТ — ЕДИНАЯ КАПЛЯ, А НЕ СТОПКА БЛИНОВ ===');
+{
+  /* Регрессия из отзыва: попытка набрать силуэт из шести колец давала
+   * «слоёный торт». Профиль выноса вперёд должен быть ОДНОЙ плавной
+   * дугой с единственным пиком, без ступенек. */
+  const profileOf = (cal) => {
+    const f = new FF.FurryEngine(new THREE.Scene(),
+      { species:'fox', build:'pear', furColor:1, eyeColor:1, name:'T' }, audio);
+    f.calories = cal; f._updateGrowthTargets(true);
+    for (let i = 0; i < 50; i++) f.update(1 / 60, 12);
+    const pos = f.mesh.geometry.attributes.position.array;
+    const part = f.mesh.geometry.attributes.part.array;
+    const pts = [];
+    for (let v = 0; v < f.vertexCount; v++) {
+      if ((part[v] | 0) !== 0) continue;
+      if (Math.abs(pos[v*3]) > 0.30 * f.bodyScale) continue;   // полоса по центру
+      pts.push([pos[v*3+1], pos[v*3+2]]);
+    }
+    let ymin = 1e9, ymax = -1e9;
+    for (const [y] of pts) { if (y < ymin) ymin = y; if (y > ymax) ymax = y; }
+    const N = 22, step = (ymax - ymin) / N, rows = new Array(N + 1).fill(0);
+    for (const [y, z] of pts) {
+      const i = Math.round((y - ymin) / step);
+      if (i >= 0 && i <= N && z > rows[i]) rows[i] = z;
+    }
+    const mx = Math.max(...rows) || 1;
+    const sm = rows.map((v, i) => ((rows[i-1] ?? v) + v + (rows[i+1] ?? v)) / 3);
+    let bumps = 0, peak = 0;
+    for (let i = 1; i < sm.length - 1; i++) {
+      if (sm[i] > sm[i-1] + mx*0.05 && sm[i] > sm[i+1] + mx*0.05 && sm[i] > mx*0.55) bumps++;
+      if (sm[i] > sm[peak]) peak = i;
+    }
+    return { f, bumps, mx, peak: peak / N };
+  };
+
+  for (const cal of [60000, 250000, 800000]) {
+    const r = profileOf(cal);
+    t('живот — единая капля (стадия ' + r.f.stage + ')', r.bumps === 0,
+      'лишних выступов=' + r.bumps);
+    t('пик выноса в нижней половине (ст. ' + r.f.stage + ')',
+      r.peak > 0.25 && r.peak < 0.60, 'пик на ' + (r.peak*100).toFixed(0) + '% снизу');
+  }
+
+  // Пропорции с референсов: живот доминирует над головой и шире плеч
+  const big = profileOf(250000).f;
+  const pos = big.mesh.geometry.attributes.position.array;
+  const part = big.mesh.geometry.attributes.part.array;
+  const w = {};
+  for (let v = 0; v < big.vertexCount; v++) {
+    const p = part[v] | 0;
+    const r = Math.hypot(pos[v*3], pos[v*3+2]);
+    if (!w[p] || r > w[p]) w[p] = r;
+  }
+  t('живот в разы больше головы', w[0] / w[3] > 3.5,
+    (w[0] / w[3]).toFixed(1) + 'x');
+  t('живот шире плеч', w[0] / w[5] > 1.5, (w[0] / w[5]).toFixed(1) + 'x');
+}
+
 console.log('\nВСЕГО: ' + pass + ' пройдено, ' + fail + ' провалено');
 if (fail) process.exitCode = 1;

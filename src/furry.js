@@ -500,30 +500,27 @@
       // Грудь
       add(new THREE.SphereGeometry(1, 30, 24), M(0, 1.56, 0.04, 0.38 * T, 0.26, 0.30 * T), 2);
 
-      /* --- МНОГОЯРУСНЫЕ СКЛАДКИ (референсы: «слоёный торт из подушек») ---
+      /* --- ГЛАВНАЯ ЗВЕЗДА: КРУГЛЫЙ ЖИВОТ ---
        *
-       * Раньше тело было одним гладким эллипсоидом, поэтому на большой массе
-       * читалось как бесформенный пузырь. На артах же силуэт составлен из
-       * нескольких округлых ярусов, лежащих друг на друге.
+       * Прошлая версия набирала силуэт из шести сплюснутых колец, и на
+       * большой массе это читалось как стопка блинов, а не как тело.
+       * На референсах живот — ОДНА огромная капля: круглая спереди,
+       * тяжело свисающая вниз, шире плеч.
        *
-       * Каждый ярус — сплюснутая сфера чуть шире торса на своей высоте.
-       * Пока друг худой, ярусы утоплены внутрь корпуса и невидимы; с ростом
-       * живота зоны выталкивают их наружу, и проступает та самая «стопка».
-       * Ярусы принадлежат part 0, поэтому подчиняются зонам живота. */
-      const TIERS = [
-        { y: 0.62, r: 0.44, h: 0.15, z: 0.07 },   // нижний фартук — самый широкий
-        { y: 0.88, r: 0.47, h: 0.15, z: 0.09 },
-        { y: 1.13, r: 0.48, h: 0.15, z: 0.10 },   // средний живот, главная масса
-        { y: 1.36, r: 0.45, h: 0.14, z: 0.09 },
-        { y: 1.55, r: 0.39, h: 0.13, z: 0.07 },   // подрёберная
-        { y: 1.71, r: 0.32, h: 0.11, z: 0.05 },   // переход к груди
+       * Поэтому здесь один крупный шар (главная масса) плюс два мягких
+       * подпора: верхний переход к груди и нижний навес над бёдрами.
+       * Три плавно пересекающиеся сферы дают каплю без ступенек. */
+      const BELLY = [
+        // y,     радиус, высота, вынос вперёд
+        [1.30, 0.40, 0.30, 0.10],   // верх живота, уходит под грудь
+        [1.05, 0.50, 0.42, 0.16],   // ГЛАВНАЯ масса — самая круглая и выпуклая
+        [0.78, 0.46, 0.30, 0.13],   // низ: свисает и нависает над бёдрами
       ];
-      for (const t of TIERS) {
-        // Сегментация умеренная: ярус — плавное широкое кольцо, мелкая
-        // детализация на нём не видна, а вершины стоят кадров.
-        add(new THREE.SphereGeometry(1, 26, 14),
-          M(0, t.y, t.z, t.r * T, t.h, (t.r * 0.86) * T), 0);
+      for (const [by, br, bh, bz] of BELLY) {
+        add(new THREE.SphereGeometry(1, 34, 24),
+          M(0, by, bz, br * T, bh, (br * 0.92) * T), 0);
       }
+
       /* Голова заметно меньше корпуса и посажена ниже: на референсах она
        * тонет в шейных складках, а не возвышается над телом. */
       add(new THREE.SphereGeometry(1, 32, 26), M(0, 1.98, 0.02, 0.205, 0.205, 0.215), 3);
@@ -531,6 +528,24 @@
       add(new THREE.SphereGeometry(1, 20, 16), M(0, 1.94, 0.20, 0.115, 0.088, 0.115), 3);
       // Шея
       add(new THREE.CylinderGeometry(0.17, 0.22, 0.22, 20, 3), M(0, 1.80, 0.02, 1, 1, 1), 4);
+
+      /* --- ПОДБОРОДКИ: видимые валики ---
+       *
+       * Зоны chin1..chin3 существовали и росли, но деформировать им было
+       * нечего: под челюстью не было геометрии, и «двойной подбородок» с
+       * артов не читался. Три сплюснутых кольца под мордой дают те самые
+       * ступени, которые колышутся каждая сама по себе.
+       *
+       * Валики принадлежат part 3 (голова), поэтому подчиняются только
+       * лицевым зонам и не тянутся за животом. */
+      const CHINS = [
+        [1.855, 0.150, 0.062, 0.150],   // первый — под губами
+        [1.790, 0.170, 0.070, 0.140],   // второй — крупнее первого
+        [1.725, 0.175, 0.072, 0.120],   // третий — сливается с грудью
+      ];
+      for (const [cy, cr, ch, cz] of CHINS) {
+        add(new THREE.SphereGeometry(1, 24, 14), M(0, cy, cz, cr, ch, cr * 0.85), 3);
+      }
 
       // Руки (плечо + предплечье + лапа) x2
       for (const s of [-1, 1]) {
@@ -1288,6 +1303,104 @@
         this.emotion === 'sad' ? 'sad' : 'mur', this.opts.species, 1 + Math.random() * 0.15);
     }
 
+    /**
+     * IDLE-ЖИЗНЬ: друг никогда не стоит истуканом.
+     *
+     * Раз в 10-20 секунд проигрывается одна из бытовых сценок: похлопать
+     * себя по животу, потянуться, принюхаться, почесаться. Между ними идут
+     * непрерывные микро-движения. Именно это отличает живое существо от
+     * 3D-модели в позе T-pose.
+     *
+     * Сценки не блокируют друг друга и не мешают физике — они лишь
+     * подталкивают зоны и мимику, а всё остальное доигрывает мягкое тело.
+     */
+    _updateIdleLife(dt) {
+      const em = this.emotions ? this.emotions.e : null;
+
+      // Текущая сценка доигрывается
+      if (this._idleAct) {
+        this._idleAct.t += dt;
+        this._runIdleAct(dt);
+        if (this._idleAct.t >= this._idleAct.dur) this._idleAct = null;
+        return;
+      }
+
+      this._idleT = (this._idleT || U.rand(4, 10)) - dt;
+      if (this._idleT > 0) return;
+      this._idleT = U.rand(10, 20);
+
+      // Выбор сценки по настроению — голодный чаще гладит живот и нюхает
+      const pool = [];
+      pool.push('pat', 'stretch', 'scratch', 'look');
+      if (em && em.hunger > 50) pool.push('pat', 'sniff', 'sniff');
+      if (em && em.sleepiness > 55) pool.push('stretch');
+      if (em && em.happiness > 65) pool.push('wiggle');
+      const kind = U.pick(pool);
+      this._idleAct = { kind, t: 0, dur: kind === 'stretch' ? 2.4 : 1.6 };
+
+      switch (kind) {
+        case 'pat':
+          this.say(U.pick(['*похлопывает пузико*', 'Мур~ какой я мягкий.', '*гладит живот*']));
+          this.audio && this.audio.squish();
+          break;
+        case 'sniff':
+          this.say(U.pick(['*принюхивается* Чем-то вкусным пахнет...', '*нюхает воздух*']));
+          break;
+        case 'scratch':
+          this.say(U.pick(['*почёсывается*', 'Ммм... тут чешется.']));
+          break;
+        case 'wiggle':
+          this.tail && this.tail.wag(1, 2);
+          break;
+      }
+    }
+
+    /** Покадровое проигрывание текущей сценки */
+    _runIdleAct(dt) {
+      const a = this._idleAct;
+      const k = a.t / a.dur;                   // 0..1 прогресс
+      const pulse = Math.sin(k * Math.PI);     // плавно нарастает и спадает
+
+      switch (a.kind) {
+        case 'pat': {
+          // Похлопывания по животу: 3 мягких удара за сценку
+          const belly = this.nodeById.mid_belly;
+          const beat = Math.floor(a.t / 0.45);
+          if (belly && beat !== a._beat) {
+            a._beat = beat;
+            belly.press(_tmpWaveA.set(0, -0.3, -1).normalize(), 0.45);
+            belly.impulse(_tmpWaveA.set(0, -1, 0.4).normalize(), 9);
+            this.audio && this.audio.squish();
+          }
+          break;
+        }
+        case 'stretch': {
+          // Потягивание: тело чуть вытягивается вверх, плечи поднимаются
+          for (const id of ['left_shoulder', 'right_shoulder', 'upper_back']) {
+            const nd = this.nodeById[id];
+            if (nd) nd.offset.y += pulse * dt * 0.35;
+          }
+          this.mouthOpen = Math.max(this.mouthOpen, pulse * 0.55);
+          break;
+        }
+        case 'sniff': {
+          // Нос шевелится, голова чуть тянется вперёд
+          if (this.nose) this.nose.position.z += Math.sin(a.t * 22) * 0.004;
+          break;
+        }
+        case 'scratch': {
+          const nd = this.nodeById[U.pick(['left_flank', 'right_flank', 'nape'])];
+          if (nd && Math.random() < dt * 8) nd.press(_tmpWaveA.set(0, 0, -1), 0.25);
+          break;
+        }
+        case 'wiggle': {
+          // Довольное покачивание всем телом
+          this.root.position.x += Math.sin(a.t * 9) * dt * 0.25;
+          break;
+        }
+      }
+    }
+
     /* -------------------- Обновление -------------------- */
 
     update(dt, gameHours) {
@@ -1389,6 +1502,8 @@
       this._updateWaves(dt);
       // Эмоции влияют на тело: смех трясёт живот, смущение надувает щёки
       this._emotionalPhysics(dt);
+      // Бытовые сценки: похлопать пузо, потянуться, принюхаться
+      this._updateIdleLife(dt);
       // Желудок распирает живот и урчит; хвост живёт своей инерцией
       if (this.digestion) this.digestion.update(dt);
       if (this.tail) this.tail.update(dt);
@@ -1625,7 +1740,17 @@
       const buf = this._smBuf;
       const start = this._smStart, nb = this._smNb;
       const n = this.vertexCount;
+      /* Лицо сглаживаем ВТРОЕ слабее.
+       *
+       * Телу сглаживание нужно — оно убирает кусковатость на стыках зон.
+       * Но подбородки и щёки живут на масштабе в несколько сантиметров, и
+       * та же сила полностью «слизывала» валики: двойной подбородок с
+       * артов переставал читаться. */
+      const partArr = this.baseGeo.attributes.part
+        ? this.baseGeo.attributes.part.array : null;
       for (let v = 0; v < n; v++) {
+        const isFace = partArr ? (partArr[v] | 0) === 3 : false;
+        const k = isFace ? strength * 0.3 : strength;
         const s = start[v], e = start[v + 1];
         const deg = e - s;
         if (deg === 0) { buf[v*3] = pos[v*3]; buf[v*3+1] = pos[v*3+1]; buf[v*3+2] = pos[v*3+2]; continue; }
@@ -1635,9 +1760,9 @@
           x += pos[u]; y += pos[u + 1]; z += pos[u + 2];
         }
         const inv = 1 / deg;
-        buf[v*3]     = pos[v*3]     + (x * inv - pos[v*3])     * strength;
-        buf[v*3 + 1] = pos[v*3 + 1] + (y * inv - pos[v*3 + 1]) * strength;
-        buf[v*3 + 2] = pos[v*3 + 2] + (z * inv - pos[v*3 + 2]) * strength;
+        buf[v*3]     = pos[v*3]     + (x * inv - pos[v*3])     * k;
+        buf[v*3 + 1] = pos[v*3 + 1] + (y * inv - pos[v*3 + 1]) * k;
+        buf[v*3 + 2] = pos[v*3 + 2] + (z * inv - pos[v*3 + 2]) * k;
       }
       pos.set(buf);
     }
@@ -1840,7 +1965,11 @@
         }
       }
       // Голова поднимается при росте шеи/подбородков
-      const chinLift = (this.nodeById.chin1.growth + this.nodeById.chin2.growth + this.nodeById.chin3.growth) * 0.045;
+      /* Голова приподнимается на растущих подбородках. Множитель поднят с
+       * 0.045: зоны подбородков были сдвинуты ниже (чтобы валики читались),
+       * и прежней компенсации перестало хватать — лицо оседало в грудь. */
+      const chinLift = (this.nodeById.chin1.growth + this.nodeById.chin2.growth
+        + this.nodeById.chin3.growth) * 0.075;
       const headY = 2.06 * S + chinLift + dY;
       const faceZ = isFinite(front) && front > 0 ? front : 0.34 * S;
 
